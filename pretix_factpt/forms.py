@@ -17,7 +17,7 @@ class FactptSettingsForm(SettingsForm):
     factpt_default_tax_id = forms.IntegerField(
         label=_("VAT rate ID (Fact.pt)"),
         help_text=_(
-            "Look up via /support/api?c=lists&s=taxes on your Fact.pt account."
+            "Populated automatically as a dropdown once a valid API token is entered above."
         ),
     )
     factpt_default_unit_id = forms.IntegerField(

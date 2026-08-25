@@ -66,19 +66,19 @@ def test_settings_page_requires_permission(client, event):
 def test_lookups_returns_taxes_and_units(logged_in_client, event):
     responses.add(
         responses.GET,
-        "https://api.fact.pt/support/api?c=lists&s=taxes",
+        "https://api.fact.pt/taxes",
         json={
             "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 5, "name": "Normal - 23%"}]},
+            "AppResponse": {"data": [{"id": 5, "description": "Normal - 23%"}]},
         },
         status=200,
     )
     responses.add(
         responses.GET,
-        "https://api.fact.pt/support/api?c=lists&s=product_unit",
+        "https://api.fact.pt/units",
         json={
             "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 1, "name": "Unit"}]},
+            "AppResponse": {"data": [{"id": 1, "description": "Unit"}]},
         },
         status=200,
     )

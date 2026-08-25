@@ -14,10 +14,12 @@ from .tasks import generate_factpt_invoice
 
 
 def _describe(item):
+    # "description" is the confirmed field for /taxes; the others are fallbacks in case
+    # /units (unconfirmed endpoint) turns out to use a different key.
     return (
-        item.get("name")
+        item.get("description")
+        or item.get("name")
         or item.get("designation")
-        or item.get("description")
         or str(item.get("id"))
     )
 

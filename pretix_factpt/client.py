@@ -78,13 +78,15 @@ class FactptClient:
         return self._request("GET", f"/documents/{document_id}")
 
     def list_taxes(self):
-        return self._request("GET", "/support/api?c=lists&s=taxes").get("data") or []
+        # Confirmed against a third-party client (digfish/php-factpt-cli) — the
+        # /support/api?c=lists&s=taxes path this used to hit doesn't exist.
+        return self._request("GET", "/taxes").get("data") or []
 
     def list_units(self):
-        return (
-            self._request("GET", "/support/api?c=lists&s=product_unit").get("data")
-            or []
-        )
+        # Unconfirmed: no public client documents a units-listing endpoint. Guessed by
+        # analogy with /taxes, /products, /clients, /documents (this API's other flat,
+        # plural-noun list endpoints). Fails gracefully like any other lookup call.
+        return self._request("GET", "/units").get("data") or []
 
     def download_document(self, document_id):
         url = f"{self.base_url}/documents/{document_id}/download"

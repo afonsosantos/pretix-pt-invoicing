@@ -82,8 +82,7 @@ edges" below before relying on this in production.
     the POST body (**not** `event.settings`) so it reflects whatever the admin has currently typed into
     the form, before it's saved — calls `FactptClient.list_taxes()`/`list_units()` and returns
     `{"taxes": [...], "units": [...]}` (each item `{"id": ..., "label": ...}`, via the `_describe()`
-    helper which tries `name`/`designation`/`description` in turn — the exact key Fact.pt's list
-    endpoints use for the human-readable label hasn't been confirmed against a live account). A
+    helper which tries `description`/`name`/`designation` in turn). A
     `FactptAPIError` (bad token, unreachable) is returned as `{"error": ...}` with HTTP 400; the
     settings-page JS surfaces that in a `#factpt-lookup-status` line under the sandbox toggle rather than
     failing silently — a bad/not-yet-valid token just leaves the plain number inputs in place.
@@ -204,11 +203,15 @@ the API docs, not verified against live traffic:
 1. **VAT rate mapping is one fixed `factpt_default_tax_id` per event.** If an event sells items at
    different VAT rates, `build_items_block` needs a pretix-tax-rate → Fact.pt-`taxId` mapping instead
    of a single value.
-2. **`taxId`/`unitId` come from the settings-page dropdowns** (`SettingsLookupsView`, populated from
-   `GET /support/api?c=lists&s=taxes` / `...&s=product_unit`), but the label field the code reads off
-   each item (`_describe()` in `views.py`, trying `name`/`designation`/`description`) hasn't been
-   confirmed against a real account — if the dropdowns render with blank or `"None"` labels, that's the
-   first thing to check.
+2. **`taxId`/`unitId` come from the settings-page dropdowns** (`SettingsLookupsView`, calling
+   `FactptClient.list_taxes()`/`list_units()`). `GET /taxes` is confirmed correct — cross-checked
+   against a third-party client, `digfish/php-factpt-cli` on GitHub, whose `listTaxes()` hits `/taxes`
+   and reads each item's `description` field (matches `_describe()`'s first choice). `GET /units` for
+   `list_units()` is **not** confirmed — no public client documents a units-listing endpoint; it's a
+   guess by analogy with this API's other flat, plural-noun endpoints (`/taxes`, `/products`, `/clients`,
+   `/documents`). If the VAT-rate dropdown works but the unit dropdown doesn't (or 404s with "route does
+   not exist", same failure mode `/support/api?c=lists&s=taxes` originally hit), that's the first thing
+   to check — the settings-page `#factpt-lookup-status` line will show the raw Fact.pt error either way.
 3. **Two different retry paths, don't conflate them**: `tasks.py`'s `self.retry()` (3 attempts, 120s
    apart) is only for network/infra exceptions; the Control-panel "Retry" button
    (`RetryView`) is for `FactptAPIError`s that need a data/config fix first.

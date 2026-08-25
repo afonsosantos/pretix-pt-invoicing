@@ -79,6 +79,38 @@ def test_create_invoice_receipt_raises_on_http_error_status():
 
 
 @responses.activate
+def test_list_taxes_returns_data():
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/taxes",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {"data": [{"id": 5, "description": "Normal - 23%"}]},
+        },
+        status=200,
+    )
+
+    client = FactptClient(token="abc")
+    assert client.list_taxes() == [{"id": 5, "description": "Normal - 23%"}]
+
+
+@responses.activate
+def test_list_units_returns_data():
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/units",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {"data": [{"id": 1, "description": "Unit"}]},
+        },
+        status=200,
+    )
+
+    client = FactptClient(token="abc")
+    assert client.list_units() == [{"id": 1, "description": "Unit"}]
+
+
+@responses.activate
 def test_download_document_returns_bytes():
     responses.add(
         responses.GET,
