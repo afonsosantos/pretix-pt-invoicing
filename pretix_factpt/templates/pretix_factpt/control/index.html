@@ -1,0 +1,79 @@
+{% extends "pretixcontrol/event/base.html" %}
+{% load i18n %}
+{% block title %}Fact.pt{% endblock %}
+{% block content %}
+    <h1>{% trans "Invoice-Receipts — Fact.pt" %}</h1>
+
+    <form method="get" class="form-inline" style="margin-bottom: 1em;">
+        <select name="status" class="form-control" onchange="this.form.submit()">
+            <option value="">{% trans "All statuses" %}</option>
+            {% for value, label in status_choices %}
+                <option value="{{ value }}" {% if value == status_filter %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </form>
+
+    <table class="table">
+        <thead>
+        <tr>
+            <th>{% trans "Order" %}</th>
+            <th>{% trans "Status" %}</th>
+            <th>{% trans "Document" %}</th>
+            <th>{% trans "Error" %}</th>
+            <th>{% trans "Attempts" %}</th>
+            <th>{% trans "Last updated" %}</th>
+            <th></th>
+        </tr>
+        </thead>
+        <tbody>
+        {% for invoice in invoices %}
+            <tr>
+                <td>
+                    <a href="{% url "control:event.order" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}">
+                        {{ invoice.order.code }}
+                    </a>
+                </td>
+                <td>
+                    {% if invoice.status == "success" %}
+                        <span class="label label-success">{% trans "Issued" %}</span>
+                    {% elif invoice.status == "error" %}
+                        <span class="label label-danger">{% trans "Error" %}</span>
+                    {% else %}
+                        <span class="label label-warning">{% trans "Processing" %}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if invoice.status == "success" %}
+                        <a href="{% url "plugins:pretix_factpt:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}" target="_blank">
+                            {{ invoice.factpt_document_id }}
+                        </a>
+                    {% else %}—{% endif %}
+                </td>
+                <td>
+                    {% if invoice.error_message %}
+                        <span class="text-danger">{{ invoice.error_message }}</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>{{ invoice.attempts }}</td>
+                <td>{{ invoice.modified }}</td>
+                <td>
+                    {% if invoice.status == "error" %}
+                        <form method="post" action="{% url "plugins:pretix_factpt:retry" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-default btn-xs">
+                                {% trans "Retry" %}
+                            </button>
+                        </form>
+                    {% endif %}
+                </td>
+            </tr>
+        {% empty %}
+            <tr>
+                <td colspan="7">{% trans "No invoices processed yet." %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% include "pretixcontrol/pagination.html" %}
+{% endblock %}

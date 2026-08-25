@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pretix-factpt"
+version = "0.1.0"
+description = "Issue AT-certified invoice-receipts via Fact.pt in pretix"
+readme = "README.rst"
+requires-python = ">=3.11"
+license = { text = "Apache Software License" }
+authors = [
+    { name = "Afonso Santos" },
+]
+dependencies = [
+    "requests>=2.31",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.optional-dependencies]
+test = [
+    "pretix",
+    "pytest",
+    "pytest-django",
+    "responses",
+    "django-scopes",
+]
+
+[project.urls]
+Homepage = "https://github.com/afonsosantos/pretix-factpt"
+Issues = "https://github.com/afonsosantos/pretix-factpt/issues"
+
+[project.entry-points."pretix.plugin"]
+pretix_factpt = "pretix_factpt:PluginApp"
+
+[dependency-groups]
+dev = [
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["pretix_factpt*"]
+
+[tool.setuptools.package-data]
+pretix_factpt = ["templates/**/*", "locale/**/*"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+python_files = "test_*.py"
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py311"
+
+[tool.ruff.lint]
+extend-select = ["I"]
+
+[tool.ruff.lint.per-file-ignores]
+"pretix_factpt/migrations/*" = ["RUF012"]

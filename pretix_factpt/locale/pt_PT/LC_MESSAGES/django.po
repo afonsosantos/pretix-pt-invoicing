@@ -1,0 +1,120 @@
+# Portuguese (Portugal) translations for pretix-factpt.
+# Copyright (C) 2026 Afonso Santos
+# This file is distributed under the same license as the pretix-factpt package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: pretix-factpt\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-25 19:36+0100\n"
+"PO-Revision-Date: 2026-08-25 19:30+0100\n"
+"Last-Translator: Afonso Santos\n"
+"Language-Team: Portuguese (Portugal)\n"
+"Language: pt_PT\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Fact.pt"
+msgstr "Fact.pt"
+
+msgid ""
+"Issues AT-certified invoice-receipts via Fact.pt asynchronously after "
+"payment confirmation, with a tracking and retry panel."
+msgstr ""
+"Emite faturas-recibo AT-certificadas via Fact.pt de forma assíncrona após a "
+"confirmação de pagamento, com painel de acompanhamento e retry."
+
+#, python-format
+msgid "Could not reach Fact.pt: %(error)s"
+msgstr "Falha de ligação ao Fact.pt: %(error)s"
+
+#, python-format
+msgid "Invalid response from Fact.pt (HTTP %(status)s)"
+msgstr "Resposta inválida do Fact.pt (HTTP %(status)s)"
+
+msgid "Unknown error from Fact.pt"
+msgstr "Erro desconhecido do Fact.pt"
+
+msgid "API token (x-auth-token)"
+msgstr "Token da API (x-auth-token)"
+
+msgid "Use sandbox environment"
+msgstr "Usar ambiente de testes (sandbox)"
+
+msgid "The sandbox and production API tokens are different in Fact.pt."
+msgstr "A chave de sandbox e a chave de produção são diferentes no Fact.pt."
+
+msgid "VAT rate ID (Fact.pt)"
+msgstr "ID da taxa de IVA (Fact.pt)"
+
+msgid "Look up via /support/api?c=lists&s=taxes on your Fact.pt account."
+msgstr "Consultar em /support/api?c=lists&s=taxes na conta Fact.pt."
+
+msgid "Unit ID (Fact.pt)"
+msgstr "ID da unidade (Fact.pt)"
+
+msgid "Item type"
+msgstr "Tipo de item"
+
+msgid "Service"
+msgstr "Serviço"
+
+msgid "Product"
+msgstr "Produto"
+
+msgid "Processing"
+msgstr "A processar"
+
+msgid "Issued"
+msgstr "Emitida"
+
+msgid "Error"
+msgstr "Erro"
+
+msgid "Invoice-Receipts — Fact.pt"
+msgstr "Faturas-Recibo — Fact.pt"
+
+msgid "All statuses"
+msgstr "Todos os estados"
+
+msgid "Order"
+msgstr "Encomenda"
+
+msgid "Status"
+msgstr "Estado"
+
+msgid "Document"
+msgstr "Documento"
+
+msgid "Attempts"
+msgstr "Tentativas"
+
+msgid "Last updated"
+msgstr "Última atualização"
+
+msgid "Retry"
+msgstr "Tentar novamente"
+
+msgid "No invoices processed yet."
+msgstr "Ainda não há faturas processadas."
+
+msgid ""
+"Configure here the Fact.pt API access used to issue invoice-receipts after "
+"payment is confirmed."
+msgstr ""
+"Configure aqui o acesso à API do Fact.pt usada para emitir Faturas-Recibo "
+"após pagamento confirmado."
+
+msgid "Save"
+msgstr "Guardar"
+
+msgid "Re-issuance request sent to Fact.pt."
+msgstr "Pedido de nova emissão enviado para o Fact.pt."
+
+msgid "No API token provided."
+msgstr "Nenhum token da API fornecido."
+
+msgid "Fact.pt settings saved."
+msgstr "Definições do Fact.pt guardadas."

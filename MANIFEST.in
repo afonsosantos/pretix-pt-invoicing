@@ -1,0 +1,3 @@
+include README.rst LICENSE
+recursive-include pretix_factpt/templates *
+recursive-include pretix_factpt/locale *
