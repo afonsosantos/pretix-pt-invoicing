@@ -16,6 +16,12 @@ def build_client_block(order):
         "city": (ia.city if ia and ia.city else "-"),
         "zip": (ia.zipcode if ia and ia.zipcode else "-"),
         "country": (ia.country.code if ia and ia.country else "PT"),
+        # Per Fact.pt's docs, this covers two collisions: a NIF that already has a client
+        # record on file, or (for Final Consumer, below) a name+country combo that already
+        # does. Either way it turns client creation into an upsert instead of a strict
+        # create — without it, a repeat buyer or a retry after a prior attempt already
+        # registered the client fails with "clientBlock: Force update is not true."
+        "forceTin": True,
     }
 
     if has_tin:
@@ -25,12 +31,8 @@ def build_client_block(order):
             tin = tin[2:]
         client["tin"] = tin
         client["finalConsumer"] = False
-        # Without this, Fact.pt rejects the request ("clientBlock: Force update is not
-        # true.") whenever this NIF already has a client record on file with different
-        # details than what we're sending — e.g. a repeat buyer, or a retry after a
-        # previous attempt already registered the client. forceTin makes it an upsert.
-        client["forceTin"] = True
     else:
+        # Fact.pt requires omitting tin/ric/retention entirely when finalConsumer is true.
         client["finalConsumer"] = True
 
     return client

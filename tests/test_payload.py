@@ -26,7 +26,9 @@ def test_build_client_block_without_invoice_address_is_final_consumer(order):
     client = build_client_block(order)
     assert client["finalConsumer"] is True
     assert "tin" not in client
-    assert "forceTin" not in client
+    assert "ric" not in client
+    assert "retention" not in client
+    assert client["forceTin"] is True
     assert client["name"] == order.email
 
 

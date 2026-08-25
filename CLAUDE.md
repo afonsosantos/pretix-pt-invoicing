@@ -52,13 +52,16 @@ invoice issuance itself hasn't. See "Known rough edges" below before relying on 
     the actual duplicate-issuance guard (the plugin-level `FactptInvoice.status == success` check in
     `tasks.py` is a fast-path in front of that, not a replacement for it).
   - `build_client_block(order)` — reads `order.invoice_address` (a `OneToOneField`, so it can be
-    `None`). No NIF → `finalConsumer: true`; NIF present → strips a leading `"PT"` (Fact.pt's `tin`
-    field wants the bare number), sets `finalConsumer: false`, and sets `forceTin: true` — confirmed via
-    a real account: without it, any order whose NIF already has a client record on file at Fact.pt (a
-    repeat buyer, or a retry after a prior attempt already registered the client) is rejected with
-    `"clientBlock: Force update is not true."`. `forceTin` makes client creation an upsert instead of a
-    strict create; found in `digfish/php-factpt-cli`'s `Customer` element (`$new_customer->forceTin =
-    TRUE`) — no public docs name it, but it's confirmed to fix this exact error against a live account.
+    `None`). No NIF → `finalConsumer: true`, and `tin`/`ric`/`retention` must be omitted entirely (Fact.pt
+    rejects the request if they're present alongside `finalConsumer: true`) — this code never sets
+    `ric`/`retention` at all, so that's automatic. NIF present → strips a leading `"PT"` (Fact.pt's `tin`
+    field wants the bare number) and sets `finalConsumer: false`.
+    `forceTin: true` is set **unconditionally**, on both branches — confirmed against Fact.pt's own
+    `/clients` docs: it covers two distinct collisions, a NIF that already has a client record on file
+    *or* (for Final Consumer) a name+country combo that already does. Either way it turns client
+    creation into an upsert instead of a strict create. Without it, a repeat buyer, or a retry after a
+    prior attempt already registered the client, fails with `"clientBlock: Force update is not true."`
+    — this hit both branches in practice (an order with a NIF, then separately one without).
   - `build_items_block(order, event_settings)` — one inline item per `order.positions.all()`
     (pretix's non-canceled-positions manager), with `taxId`/`unitId`/`type` all coming from the
     event's plugin settings (`factpt_default_tax_id`/`_unit_id`/`_type`), **not** derived from the
