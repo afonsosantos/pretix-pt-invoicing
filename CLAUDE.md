@@ -53,7 +53,12 @@ invoice issuance itself hasn't. See "Known rough edges" below before relying on 
     `tasks.py` is a fast-path in front of that, not a replacement for it).
   - `build_client_block(order)` — reads `order.invoice_address` (a `OneToOneField`, so it can be
     `None`). No NIF → `finalConsumer: true`; NIF present → strips a leading `"PT"` (Fact.pt's `tin`
-    field wants the bare number) and sets `finalConsumer: false`.
+    field wants the bare number), sets `finalConsumer: false`, and sets `forceTin: true` — confirmed via
+    a real account: without it, any order whose NIF already has a client record on file at Fact.pt (a
+    repeat buyer, or a retry after a prior attempt already registered the client) is rejected with
+    `"clientBlock: Force update is not true."`. `forceTin` makes client creation an upsert instead of a
+    strict create; found in `digfish/php-factpt-cli`'s `Customer` element (`$new_customer->forceTin =
+    TRUE`) — no public docs name it, but it's confirmed to fix this exact error against a live account.
   - `build_items_block(order, event_settings)` — one inline item per `order.positions.all()`
     (pretix's non-canceled-positions manager), with `taxId`/`unitId`/`type` all coming from the
     event's plugin settings (`factpt_default_tax_id`/`_unit_id`/`_type`), **not** derived from the
@@ -216,6 +221,10 @@ The entry point's *module* portion must resolve to a package with its own `apps.
    against a real account — see `_describe_tax()` in `views.py`. `list_taxes()` only fetches page 1
    (the response also carries `totalPages`); fine for VAT rates in practice (a handful per account), but
    worth revisiting with real pagination via the response's paging info if an account ever has more.
+4. **`build_client_block`'s `forceTin: true` always overwrites the Fact.pt-side client record** with
+   whatever's currently in `order.invoice_address` — there's no "only update if different" mode. If a
+   client's Fact.pt record has been manually corrected there (a fixed typo, an updated address) and a
+   later pretix order carries the old data, that later order's invoice will silently revert it.
 
 ## Commands
 

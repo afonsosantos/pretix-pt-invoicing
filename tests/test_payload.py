@@ -26,6 +26,7 @@ def test_build_client_block_without_invoice_address_is_final_consumer(order):
     client = build_client_block(order)
     assert client["finalConsumer"] is True
     assert "tin" not in client
+    assert "forceTin" not in client
     assert client["name"] == order.email
 
 
@@ -42,6 +43,7 @@ def test_build_client_block_with_vat_id_strips_pt_prefix(order):
     assert client["finalConsumer"] is False
     assert client["tin"] == "123456789"
     assert client["name"] == "Jane Doe"
+    assert client["forceTin"] is True
 
 
 @pytest.mark.django_db

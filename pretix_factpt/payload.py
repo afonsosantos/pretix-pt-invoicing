@@ -25,6 +25,11 @@ def build_client_block(order):
             tin = tin[2:]
         client["tin"] = tin
         client["finalConsumer"] = False
+        # Without this, Fact.pt rejects the request ("clientBlock: Force update is not
+        # true.") whenever this NIF already has a client record on file with different
+        # details than what we're sending — e.g. a repeat buyer, or a retry after a
+        # previous attempt already registered the client. forceTin makes it an upsert.
+        client["forceTin"] = True
     else:
         client["finalConsumer"] = True
 
