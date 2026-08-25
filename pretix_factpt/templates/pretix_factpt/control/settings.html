@@ -1,6 +1,7 @@
 {% extends "pretixcontrol/event/settings_base.html" %}
 {% load i18n %}
 {% load bootstrap3 %}
+{% load static %}
 {% block inside %}
     <h1>{% trans "Fact.pt" %}</h1>
     <p>
@@ -14,6 +15,11 @@
         {% bootstrap_form_errors form %}
         {% bootstrap_field form.factpt_token layout="horizontal" %}
         {% bootstrap_field form.factpt_sandbox layout="horizontal" %}
+        <div class="form-group">
+            <div class="col-md-9 col-md-offset-3">
+                <span id="factpt-lookup-status" class="help-block"></span>
+            </div>
+        </div>
         {% bootstrap_field form.factpt_default_tax_id layout="horizontal" %}
         {% bootstrap_field form.factpt_default_unit_id layout="horizontal" %}
         {% bootstrap_field form.factpt_default_type layout="horizontal" %}
@@ -23,67 +29,5 @@
             </button>
         </div>
     </form>
-    <script>
-        document.addEventListener("DOMContentLoaded", function () {
-            var tokenField = document.getElementById("id_factpt-factpt_token");
-            var sandboxField = document.getElementById("id_factpt-factpt_sandbox");
-            var lookupsUrl = "{% url 'plugins:pretix_factpt:settings_lookups' event=request.event.slug organizer=request.organizer.slug %}";
-            var csrfToken = document.querySelector("input[name=csrfmiddlewaretoken]").value;
-
-            function toSelect(input) {
-                if (input.tagName === "SELECT") return input;
-                var select = document.createElement("select");
-                select.name = input.name;
-                select.id = input.id;
-                select.className = input.className;
-                input.replaceWith(select);
-                return select;
-            }
-
-            function populate(fieldId, items, currentValue) {
-                var select = toSelect(document.getElementById(fieldId));
-                select.innerHTML = "";
-                items.forEach(function (item) {
-                    var option = document.createElement("option");
-                    option.value = item.id;
-                    option.textContent = item.label;
-                    if (String(item.id) === String(currentValue)) option.selected = true;
-                    select.appendChild(option);
-                });
-            }
-
-            function loadOptions() {
-                var token = tokenField.value.trim();
-                if (!token) return;
-                var taxField = document.getElementById("id_factpt-factpt_default_tax_id");
-                var unitField = document.getElementById("id_factpt-factpt_default_unit_id");
-                var currentTax = taxField.value;
-                var currentUnit = unitField.value;
-                var body = new URLSearchParams();
-                body.set("token", token);
-                body.set("sandbox", sandboxField && sandboxField.checked ? "true" : "false");
-
-                fetch(lookupsUrl, {
-                    method: "POST",
-                    headers: {
-                        "X-CSRFToken": csrfToken,
-                        "Content-Type": "application/x-www-form-urlencoded",
-                    },
-                    body: body.toString(),
-                })
-                    .then(function (r) { return r.json(); })
-                    .then(function (data) {
-                        if (data.error) return;
-                        populate("id_factpt-factpt_default_tax_id", data.taxes, currentTax);
-                        populate("id_factpt-factpt_default_unit_id", data.units, currentUnit);
-                    });
-            }
-
-            if (tokenField) {
-                tokenField.addEventListener("blur", loadOptions);
-                if (sandboxField) sandboxField.addEventListener("change", loadOptions);
-                if (tokenField.value.trim()) loadOptions();
-            }
-        });
-    </script>
+    <script type="application/javascript" src="{% static 'pretix_factpt/settings.js' %}"></script>
 {% endblock %}

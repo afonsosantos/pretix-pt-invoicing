@@ -54,7 +54,7 @@ dev = [
 include = ["pretix_factpt*"]
 
 [tool.setuptools.package-data]
-pretix_factpt = ["templates/**/*", "locale/**/*"]
+pretix_factpt = ["templates/**/*", "locale/**/*", "static/**/*"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.settings"

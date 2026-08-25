@@ -85,12 +85,19 @@ edges" below before relying on this in production.
     helper which tries `name`/`designation`/`description` in turn — the exact key Fact.pt's list
     endpoints use for the human-readable label hasn't been confirmed against a live account). A
     `FactptAPIError` (bad token, unreachable) is returned as `{"error": ...}` with HTTP 400; the
-    settings-page JS treats that as "leave the plain number input alone", so a bad/not-yet-valid token
-    never breaks the form — it just doesn't get a dropdown yet.
+    settings-page JS surfaces that in a `#factpt-lookup-status` line under the sandbox toggle rather than
+    failing silently — a bad/not-yet-valid token just leaves the plain number inputs in place.
   - `factpt_default_tax_id`/`factpt_default_unit_id` stay plain `IntegerField`s in `forms.py` — the
-    dropdown is a pure client-side enhancement (`templates/pretix_factpt/control/settings.html`'s inline
-    `<script>` swaps the rendered `<input type=number>` for a `<select>` with the same `name`/`id` once
-    a lookup succeeds), not a `ChoiceField`. Deliberately not a `TypedChoiceField`: that would validate
+    dropdown is a pure client-side enhancement (`static/pretix_factpt/settings.js` swaps the rendered
+    `<input type=number>` for a `<select>` with the same `name`/`id` once a lookup succeeds), not a
+    `ChoiceField`. **Must be a real static file, not an inline `<script>` in the template** — pretix's
+    Control panel sends a nonce-based CSP (`script-src 'nonce-...' 'self' ...`) that silently blocks any
+    inline script without a matching `nonce` attribute; every pretix core plugin with page JS (e.g.
+    `banktransfer`) ships it as `static/<plugin>/*.js` loaded via `{% static %}` for exactly this reason
+    — `'self'` covers same-origin script files with no nonce needed. `settings.js` derives the lookups
+    URL from `window.location.pathname` (current page + `lookups/`) rather than a Django `{% url %}` tag,
+    since a plain static file has no template context to pull that from.
+    Deliberately not a `TypedChoiceField`: that would validate
     the submitted value against choices computed at *render* time, which would break saving a
     previously-set value on any page load where the live Fact.pt lookup fails (network hiccup, Fact.pt
     down) — the plain `IntegerField` keeps that path working regardless of API availability.
