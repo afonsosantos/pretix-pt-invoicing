@@ -3,6 +3,7 @@ from django_scopes import scopes_disabled
 from pretix.base.models import InvoiceAddress
 
 from pretix_factpt.payload import (
+    bare_tin,
     build_client_block,
     build_identifier_id,
     build_items_block,
@@ -46,6 +47,27 @@ def test_build_client_block_with_vat_id_strips_pt_prefix(order):
     assert client["tin"] == "123456789"
     assert client["name"] == "Jane Doe"
     assert client["forceTin"] is True
+
+
+@pytest.mark.django_db
+def test_bare_tin_without_invoice_address_is_none(order):
+    assert bare_tin(order) is None
+
+
+@pytest.mark.django_db
+def test_bare_tin_strips_pt_prefix(order):
+    with scopes_disabled():
+        InvoiceAddress.objects.create(order=order, vat_id="PT123456789")
+    order.refresh_from_db()
+    assert bare_tin(order) == "123456789"
+
+
+@pytest.mark.django_db
+def test_build_client_block_with_client_id_ignores_invoice_address(order):
+    with scopes_disabled():
+        InvoiceAddress.objects.create(order=order, vat_id="PT123456789")
+    order.refresh_from_db()
+    assert build_client_block(order, client_id="42") == {"id": "42"}
 
 
 @pytest.mark.django_db

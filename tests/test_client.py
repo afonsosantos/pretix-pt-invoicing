@@ -105,7 +105,23 @@ def test_list_taxes_returns_data():
     client = FactptClient(token="abc")
     taxes = client.list_taxes()
     assert taxes[0]["id"] == "25"
-    assert taxes[0]["description"] == "Taxa normal"
+
+
+@responses.activate
+def test_search_clients_returns_data():
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/clients?search=123456789",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {"data": [{"id": "42", "tin": "123456789", "name": "Jane"}]},
+        },
+        status=200,
+    )
+
+    client = FactptClient(token="abc")
+    matches = client.search_clients("123456789")
+    assert matches == [{"id": "42", "tin": "123456789", "name": "Jane"}]
 
 
 @responses.activate

@@ -6,7 +6,23 @@ def build_identifier_id(event, order):
     return f"pretix-{event.slug}-{order.code}"[:50]
 
 
-def build_client_block(order):
+def bare_tin(order):
+    # Bare NIF, no country prefix (e.g. "PT123456789" -> "123456789"), or None if the
+    # order has no VAT id at all.
+    ia = getattr(order, "invoice_address", None)
+    vat_id = ia and getattr(ia, "vat_id", None)
+    if not vat_id:
+        return None
+    return vat_id[2:] if vat_id.upper().startswith("PT") else vat_id
+
+
+def build_client_block(order, client_id=None):
+    # Referencing an existing client by id sidesteps forceTin entirely — including the
+    # case forceTin can't resolve on its own: Fact.pt refusing to upsert a tin that
+    # already matches more than one client record ("Specify an ID").
+    if client_id is not None:
+        return {"id": client_id}
+
     ia = getattr(order, "invoice_address", None)
     has_tin = bool(ia and getattr(ia, "vat_id", None))
 
@@ -25,11 +41,7 @@ def build_client_block(order):
     }
 
     if has_tin:
-        # Bare NIF, no country prefix (e.g. "PT123456789" -> "123456789")
-        tin = ia.vat_id
-        if tin.upper().startswith("PT"):
-            tin = tin[2:]
-        client["tin"] = tin
+        client["tin"] = bare_tin(order)
         client["finalConsumer"] = False
     else:
         # Fact.pt requires omitting tin/ric/retention entirely when finalConsumer is true.
@@ -63,11 +75,11 @@ def build_items_block(order, event_settings):
     return items
 
 
-def build_payload(order, event_settings):
+def build_payload(order, event_settings, client_id=None):
     identifier_id = build_identifier_id(order.event, order)
 
     payload = {
-        "client": build_client_block(order),
+        "client": build_client_block(order, client_id=client_id),
         "document": {
             "date": timezone.now().date().isoformat(),
             "markPaid": True,

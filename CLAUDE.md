@@ -38,24 +38,38 @@ invoice issuance itself hasn't. See "Known rough edges" below before relying on 
   default_retry_delay=120`) does the actual work: loads the `Order`, bails out silently if
   `factpt_token` isn't configured for the event, builds the idempotency key via
   `payload.build_identifier_id`, `get_or_create`s the `FactptInvoice` row, and short-circuits if it's
-  already `STATUS_SUCCESS`. A `FactptAPIError` (validation-type failure from Fact.pt — bad NIF, missing
-  tax mapping, etc.) is terminal: marks the invoice `error` and returns, since retrying an API-level
-  rejection without a config/data fix won't help. Any other exception (network/infra) marks `error`
-  too but also `raise self.retry(exc=e)`, since those are expected to be transient.
+  already `STATUS_SUCCESS`. If the order has a NIF, it calls `client.search_clients(tin)` first and, if
+  exactly one result's `tin` matches exactly, passes that result's `id` through to `build_payload` so the
+  client block becomes `{"id": ...}` instead of a full inline block — see `build_client_block` below for
+  why. A search failure (`FactptAPIError`) is swallowed, not fatal — falls back to inline creation, same
+  as before this existed. A `FactptAPIError` from the actual invoice creation call (validation-type
+  failure from Fact.pt — bad NIF, missing tax mapping, etc.) is terminal: marks the invoice `error` and
+  returns, since retrying an API-level rejection without a config/data fix won't help. Any other
+  exception (network/infra) marks `error` too but also `raise self.retry(exc=e)`, since those are
+  expected to be transient.
 - `pretix_factpt/client.py` — `FactptClient`, a thin `requests` wrapper over the Fact.pt REST API.
   Picks `http://api.sandbox.fact.pt` vs `https://api.fact.pt` from the `sandbox` constructor arg.
   `FactptAPIError` carries the raw `AppResponse.errors` dict (`errors`) alongside a human `.as_text()`,
-  so the admin panel can show exactly what Fact.pt rejected.
+  so the admin panel can show exactly what Fact.pt rejected. `search_clients(query)` hits
+  `GET /clients?search=<query>` (confirmed to exist via `digfish/php-factpt-cli`'s `searchCustomers()`,
+  though whether `search` matches against `tin` specifically — as opposed to only `name`/other fields —
+  isn't confirmed by any public docs; `tasks.py` re-checks each result's own `tin` field before trusting
+  a match, so a `search` that turns out to be name-only just yields zero usable matches, not a wrong one).
 - `pretix_factpt/payload.py` — pure functions mapping a pretix `Order` to a Fact.pt request body:
   - `build_identifier_id(event, order)` — `f"pretix-{event.slug}-{order.code}"[:50]`, sent as
     `document.identifierId`. Fact.pt rejects a second document with the same `identifierId`, which is
     the actual duplicate-issuance guard (the plugin-level `FactptInvoice.status == success` check in
     `tasks.py` is a fast-path in front of that, not a replacement for it).
-  - `build_client_block(order)` — reads `order.invoice_address` (a `OneToOneField`, so it can be
-    `None`). No NIF → `finalConsumer: true`, and `tin`/`ric`/`retention` must be omitted entirely (Fact.pt
-    rejects the request if they're present alongside `finalConsumer: true`) — this code never sets
-    `ric`/`retention` at all, so that's automatic. NIF present → strips a leading `"PT"` (Fact.pt's `tin`
-    field wants the bare number) and sets `finalConsumer: false`.
+  - `bare_tin(order)` — `order.invoice_address.vat_id` with any leading `"PT"` stripped (Fact.pt's `tin`
+    field wants the bare number), or `None` if there's no VAT id at all. Shared between
+    `build_client_block` (below) and `tasks.py`'s client-search step, so the two can't drift.
+  - `build_client_block(order, client_id=None)` — with `client_id` given, returns just `{"id":
+    client_id}`, referencing an existing Fact.pt client instead of describing one inline; this is what
+    `tasks.py` passes when its `search_clients` lookup found exactly one match. Otherwise (the default),
+    reads `order.invoice_address` (a `OneToOneField`, so it can be `None`). No NIF → `finalConsumer:
+    true`, and `tin`/`ric`/`retention` must be omitted entirely (Fact.pt rejects the request if they're
+    present alongside `finalConsumer: true`) — this code never sets `ric`/`retention` at all, so that's
+    automatic. NIF present → `tin` from `bare_tin(order)`, `finalConsumer: false`.
     `forceTin: true` is set **unconditionally**, on both branches — confirmed against Fact.pt's own
     `/clients` docs: it covers two distinct collisions, a NIF that already has a client record on file
     *or* (for Final Consumer) a name+country combo that already does. Either way it turns client
@@ -227,7 +241,15 @@ The entry point's *module* portion must resolve to a package with its own `apps.
 4. **`build_client_block`'s `forceTin: true` always overwrites the Fact.pt-side client record** with
    whatever's currently in `order.invoice_address` — there's no "only update if different" mode. If a
    client's Fact.pt record has been manually corrected there (a fixed typo, an updated address) and a
-   later pretix order carries the old data, that later order's invoice will silently revert it.
+   later pretix order carries the old data, that later order's invoice will silently revert it. This
+   only applies when `tasks.py`'s client search comes up empty or ambiguous — a resolved `client_id`
+   references the existing record as-is and sends no other fields to overwrite it with.
+5. **If a NIF already matches more than one client record in the account, `tasks.py` doesn't try to
+   pick one** — `search_clients` matches are only used when there's exactly one, otherwise it falls back
+   to the same inline-`client`-block-plus-`forceTin` request as before, which itself will be rejected by
+   Fact.pt (`"clientBlock: Multiple clients with same tin. Specify an ID."`) until the duplicates are
+   resolved by hand in Fact.pt's Backoffice. This is a deliberate stop, not a bug: guessing which
+   duplicate to attach an official invoice to isn't something to do silently.
 
 ## Commands
 

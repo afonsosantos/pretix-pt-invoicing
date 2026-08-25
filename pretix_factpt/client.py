@@ -1,3 +1,5 @@
+from urllib.parse import quote
+
 import requests
 from django.utils.translation import gettext_lazy as _
 
@@ -79,6 +81,12 @@ class FactptClient:
 
     def list_taxes(self):
         return self._request("GET", "/taxes").get("data") or []
+
+    def search_clients(self, query):
+        return (
+            self._request("GET", f"/clients?search={quote(str(query))}").get("data")
+            or []
+        )
 
     def download_document(self, document_id):
         url = f"{self.base_url}/documents/{document_id}/download"

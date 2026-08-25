@@ -1,6 +1,9 @@
+import json
+
 import pytest
 import responses
 from django_scopes import scopes_disabled
+from pretix.base.models import InvoiceAddress
 
 from pretix_factpt.models import FactptInvoice
 from pretix_factpt.tasks import generate_factpt_invoice
@@ -67,6 +70,74 @@ def test_api_error_marks_invoice_as_error(order, event, position):
     assert invoice.status == FactptInvoice.STATUS_ERROR
     assert invoice.error_message == "tin: Invalid"
     assert invoice.error_detail == {"tin": "Invalid"}
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_uses_existing_client_id_when_search_finds_one_match(order, event, position):
+    with scopes_disabled():
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        InvoiceAddress.objects.create(order=order, vat_id="PT123456789")
+
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/clients?search=123456789",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {"data": [{"id": "77", "tin": "123456789"}]},
+        },
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+
+    generate_factpt_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent["client"] == {"id": "77"}
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_falls_back_to_inline_client_when_search_finds_multiple_matches(
+    order, event, position
+):
+    with scopes_disabled():
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        InvoiceAddress.objects.create(order=order, vat_id="PT123456789")
+
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/clients?search=123456789",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {
+                "data": [
+                    {"id": "77", "tin": "123456789"},
+                    {"id": "78", "tin": "123456789"},
+                ]
+            },
+        },
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+
+    generate_factpt_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent["client"]["tin"] == "123456789"
+    assert "id" not in sent["client"]
 
 
 @pytest.mark.django_db

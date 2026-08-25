@@ -6,7 +6,7 @@ from pretix.celery_app import app
 
 from .client import FactptAPIError, FactptClient
 from .models import FactptInvoice
-from .payload import build_identifier_id, build_payload
+from .payload import bare_tin, build_identifier_id, build_payload
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,24 @@ def generate_factpt_invoice(self, order_pk, event_pk=None):
             sandbox=settings.get("factpt_sandbox", as_type=bool, default=False),
         )
 
-        payload, _ = build_payload(order, settings)
+        # If this NIF already has an existing client on Fact.pt, reference it by id instead
+        # of sending an inline block — sidesteps forceTin's one blind spot: it can upsert a
+        # single matching client, but if the tin already matches *more than one* (duplicate
+        # client records already in the account), Fact.pt refuses to guess and requires an
+        # explicit id ("clientBlock: Multiple clients with same tin. Specify an ID.").
+        client_id = None
+        tin = bare_tin(order)
+        if tin:
+            try:
+                matches = [
+                    c for c in client.search_clients(tin) if str(c.get("tin")) == tin
+                ]
+            except FactptAPIError:
+                matches = []
+            if len(matches) == 1:
+                client_id = matches[0].get("id")
+
+        payload, _ = build_payload(order, settings, client_id=client_id)
 
         try:
             result = client.create_invoice_receipt(payload)
