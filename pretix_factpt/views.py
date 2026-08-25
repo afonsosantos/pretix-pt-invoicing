@@ -13,15 +13,12 @@ from .models import FactptInvoice
 from .tasks import generate_factpt_invoice
 
 
-def _describe(item):
-    # "description" is the confirmed field for /taxes; the others are fallbacks in case
-    # /units (unconfirmed endpoint) turns out to use a different key.
-    return (
-        item.get("description")
-        or item.get("name")
-        or item.get("designation")
-        or str(item.get("id"))
-    )
+def _describe_tax(item):
+    description = item.get("description")
+    name = item.get("name")  # e.g. "23%"
+    if description and name:
+        return f"{description} ({name})"
+    return description or name or str(item.get("id"))
 
 
 class IndexView(EventPermissionRequiredMixin, ListView):
@@ -95,8 +92,9 @@ class DownloadView(EventPermissionRequiredMixin, View):
 
 
 class SettingsLookupsView(EventPermissionRequiredMixin, View):
-    # Powers the live VAT-rate/unit dropdowns on the settings page: the browser posts whatever
-    # token is currently typed (not necessarily saved yet), so admins see options before hitting Save.
+    # Powers the live VAT-rate dropdown on the settings page: the browser posts whatever token is
+    # currently typed (not necessarily saved yet), so admins see options before hitting Save. Product
+    # units aren't looked up here — Fact.pt's unit list is fixed, so it's a plain ChoiceField in forms.py.
     permission = "can_change_event_settings"
 
     def post(self, request, *args, **kwargs):
@@ -109,14 +107,16 @@ class SettingsLookupsView(EventPermissionRequiredMixin, View):
         )
         try:
             taxes = client.list_taxes()
-            units = client.list_units()
         except FactptAPIError as e:
             return JsonResponse({"error": e.as_text()}, status=400)
 
         return JsonResponse(
             {
-                "taxes": [{"id": t.get("id"), "label": _describe(t)} for t in taxes],
-                "units": [{"id": u.get("id"), "label": _describe(u)} for u in units],
+                "taxes": [
+                    {"id": t.get("id"), "label": _describe_tax(t)}
+                    for t in taxes
+                    if t.get("isActive", True)
+                ],
             }
         )
 

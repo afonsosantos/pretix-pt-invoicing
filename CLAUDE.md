@@ -12,8 +12,8 @@ install, ruff, GitHub Actions CI, trusted-publishing PyPI release) — see that 
 this one follows, if it's checked out alongside this one.
 
 **Status**: verified against a real pretix dev instance (`manage.py check`, migration applies cleanly)
-and covered by a 19-test suite, but not yet exercised against a real Fact.pt account. See "Known rough
-edges" below before relying on this in production.
+and covered by a test suite. The `GET /taxes` lookup has been exercised against a real Fact.pt account;
+invoice issuance itself hasn't. See "Known rough edges" below before relying on this in production.
 
 ## Architecture
 
@@ -78,28 +78,37 @@ edges" below before relying on this in production.
   - `DownloadView` (`permission = "can_view_orders"`) — proxies `GET /documents/{id}/download` so the
     Fact.pt token never reaches the browser.
   - `SettingsLookupsView` (`permission = "can_change_event_settings"`) — AJAX-only, POST-only endpoint
-    backing the live VAT-rate/unit dropdowns on the settings page. Takes `token`/`sandbox` straight from
-    the POST body (**not** `event.settings`) so it reflects whatever the admin has currently typed into
-    the form, before it's saved — calls `FactptClient.list_taxes()`/`list_units()` and returns
-    `{"taxes": [...], "units": [...]}` (each item `{"id": ..., "label": ...}`, via the `_describe()`
-    helper which tries `description`/`name`/`designation` in turn). A
-    `FactptAPIError` (bad token, unreachable) is returned as `{"error": ...}` with HTTP 400; the
-    settings-page JS surfaces that in a `#factpt-lookup-status` line under the sandbox toggle rather than
-    failing silently — a bad/not-yet-valid token just leaves the plain number inputs in place.
-  - `factpt_default_tax_id`/`factpt_default_unit_id` stay plain `IntegerField`s in `forms.py` — the
-    dropdown is a pure client-side enhancement (`static/pretix_factpt/settings.js` swaps the rendered
-    `<input type=number>` for a `<select>` with the same `name`/`id` once a lookup succeeds), not a
-    `ChoiceField`. **Must be a real static file, not an inline `<script>` in the template** — pretix's
-    Control panel sends a nonce-based CSP (`script-src 'nonce-...' 'self' ...`) that silently blocks any
-    inline script without a matching `nonce` attribute; every pretix core plugin with page JS (e.g.
-    `banktransfer`) ships it as `static/<plugin>/*.js` loaded via `{% static %}` for exactly this reason
-    — `'self'` covers same-origin script files with no nonce needed. `settings.js` derives the lookups
-    URL from `window.location.pathname` (current page + `lookups/`) rather than a Django `{% url %}` tag,
-    since a plain static file has no template context to pull that from.
-    Deliberately not a `TypedChoiceField`: that would validate
-    the submitted value against choices computed at *render* time, which would break saving a
-    previously-set value on any page load where the live Fact.pt lookup fails (network hiccup, Fact.pt
-    down) — the plain `IntegerField` keeps that path working regardless of API availability.
+    backing the live VAT-rate dropdown on the settings page (units don't need this — see below). Takes
+    `token`/`sandbox` straight from the POST body (**not** `event.settings`) so it reflects whatever the
+    admin has currently typed into the form, before it's saved — calls `FactptClient.list_taxes()` and
+    returns `{"taxes": [{"id": ..., "label": ...}, ...]}`, filtered to `isActive` rates and labeled via
+    `_describe_tax()` (`"{description} ({name})"`, e.g. `"Taxa normal (23%)"` — confirmed against
+    Fact.pt's real `/taxes` response shape: `id`/`name`/`description`/`value`/`isActive`). A
+    `FactptAPIError` (bad token, unreachable, or Fact.pt's literal `"route: That route does not exist."`
+    for a wrong path) is returned as `{"error": ...}` with HTTP 400; the settings-page JS surfaces that
+    in a `#factpt-lookup-status` line under the sandbox toggle rather than failing silently.
+  - `factpt_default_tax_id` stays a plain `IntegerField` in `forms.py` — the dropdown is a pure
+    client-side enhancement (`static/pretix_factpt/settings.js` swaps the rendered `<input type=number>`
+    for a `<select>` with the same `name`/`id` once a lookup succeeds), not a `ChoiceField`. Deliberately
+    not a `TypedChoiceField`: that would validate the submitted value against choices computed at
+    *render* time, which would break saving a previously-set value on any page load where the live
+    Fact.pt lookup fails (network hiccup, Fact.pt down) — the plain `IntegerField` keeps that path
+    working regardless of API availability. `settings.js` itself also guards this case client-side: if
+    the currently-set tax id isn't in the freshly fetched list (inactive, or the fetch is stale), it's
+    kept as an extra pre-selected option instead of being silently dropped — swapping in a `<select>`
+    with no matching option would otherwise default to the *first* option and silently change the saved
+    setting on next Save.
+  - `factpt_default_unit_id`, by contrast, **is** a real `TypedChoiceField` in `forms.py` — Fact.pt's
+    product units are a small, fixed, documented list (Units/Meters/Boxes/Kilograms/Liters, ids 1–5),
+    identical for every account, so there's nothing to look up live and no `ChoiceField`-staleness risk
+    like the tax id has. No JS involved for this field at all.
+  - **`static/pretix_factpt/settings.js` must be a real static file, not an inline `<script>` in the
+    template** — pretix's Control panel sends a nonce-based CSP (`script-src 'nonce-...' 'self' ...`)
+    that silently blocks any inline script without a matching `nonce` attribute; every pretix core plugin
+    with page JS (e.g. `banktransfer`) ships it as `static/<plugin>/*.js` loaded via `{% static %}` for
+    exactly this reason — `'self'` covers same-origin script files with no nonce needed. `settings.js`
+    derives the lookups URL from `window.location.pathname` (current page + `lookups/`) rather than a
+    Django `{% url %}` tag, since a plain static file has no template context to pull that from.
 - `pretix_factpt/urls.py` — all five views registered under
   `control/event/<organizer>/<event>/factpt/...` (plain `urlpatterns`, not `event_patterns` — Control
   panel plugin pages use the full literal path, same convention as `pretix-eupago`'s settings/orders
@@ -195,26 +204,18 @@ pretix_factpt = "pretix_factpt:PluginApp"
 The entry point's *module* portion must resolve to a package with its own `apps.py` — see
 "Architecture" above.
 
-## Known rough edges (from the original skeleton)
-
-Confirm the following against a real Fact.pt account before production use — these were written from
-the API docs, not verified against live traffic:
+## Known rough edges
 
 1. **VAT rate mapping is one fixed `factpt_default_tax_id` per event.** If an event sells items at
    different VAT rates, `build_items_block` needs a pretix-tax-rate → Fact.pt-`taxId` mapping instead
    of a single value.
-2. **`taxId`/`unitId` come from the settings-page dropdowns** (`SettingsLookupsView`, calling
-   `FactptClient.list_taxes()`/`list_units()`). `GET /taxes` is confirmed correct — cross-checked
-   against a third-party client, `digfish/php-factpt-cli` on GitHub, whose `listTaxes()` hits `/taxes`
-   and reads each item's `description` field (matches `_describe()`'s first choice). `GET /units` for
-   `list_units()` is **not** confirmed — no public client documents a units-listing endpoint; it's a
-   guess by analogy with this API's other flat, plural-noun endpoints (`/taxes`, `/products`, `/clients`,
-   `/documents`). If the VAT-rate dropdown works but the unit dropdown doesn't (or 404s with "route does
-   not exist", same failure mode `/support/api?c=lists&s=taxes` originally hit), that's the first thing
-   to check — the settings-page `#factpt-lookup-status` line will show the raw Fact.pt error either way.
-3. **Two different retry paths, don't conflate them**: `tasks.py`'s `self.retry()` (3 attempts, 120s
+2. **Two different retry paths, don't conflate them**: `tasks.py`'s `self.retry()` (3 attempts, 120s
    apart) is only for network/infra exceptions; the Control-panel "Retry" button
    (`RetryView`) is for `FactptAPIError`s that need a data/config fix first.
+3. **`GET /taxes` and its response shape (`id`/`name`/`description`/`value`/`isActive`) are confirmed**
+   against a real account — see `_describe_tax()` in `views.py`. `list_taxes()` only fetches page 1
+   (the response also carries `totalPages`); fine for VAT rates in practice (a handful per account), but
+   worth revisiting with real pagination via the response's paging info if an account ever has more.
 
 ## Commands
 

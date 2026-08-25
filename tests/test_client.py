@@ -85,29 +85,27 @@ def test_list_taxes_returns_data():
         "https://api.fact.pt/taxes",
         json={
             "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 5, "description": "Normal - 23%"}]},
+            "AppResponse": {
+                "data": [
+                    {
+                        "id": "25",
+                        "name": "23%",
+                        "description": "Taxa normal",
+                        "value": "23.00",
+                        "isActive": True,
+                    }
+                ],
+                "totalItems": 1,
+                "totalPages": 1,
+            },
         },
         status=200,
     )
 
     client = FactptClient(token="abc")
-    assert client.list_taxes() == [{"id": 5, "description": "Normal - 23%"}]
-
-
-@responses.activate
-def test_list_units_returns_data():
-    responses.add(
-        responses.GET,
-        "https://api.fact.pt/units",
-        json={
-            "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 1, "description": "Unit"}]},
-        },
-        status=200,
-    )
-
-    client = FactptClient(token="abc")
-    assert client.list_units() == [{"id": 1, "description": "Unit"}]
+    taxes = client.list_taxes()
+    assert taxes[0]["id"] == "25"
+    assert taxes[0]["description"] == "Taxa normal"
 
 
 @responses.activate

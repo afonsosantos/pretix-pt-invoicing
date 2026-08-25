@@ -63,22 +63,32 @@ def test_settings_page_requires_permission(client, event):
 
 @pytest.mark.django_db
 @responses.activate
-def test_lookups_returns_taxes_and_units(logged_in_client, event):
+def test_lookups_returns_active_taxes_with_combined_label(logged_in_client, event):
     responses.add(
         responses.GET,
         "https://api.fact.pt/taxes",
         json={
             "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 5, "description": "Normal - 23%"}]},
-        },
-        status=200,
-    )
-    responses.add(
-        responses.GET,
-        "https://api.fact.pt/units",
-        json={
-            "AppStatusCode": 200,
-            "AppResponse": {"data": [{"id": 1, "description": "Unit"}]},
+            "AppResponse": {
+                "data": [
+                    {
+                        "id": "25",
+                        "name": "23%",
+                        "description": "Taxa normal",
+                        "value": "23.00",
+                        "isActive": True,
+                    },
+                    {
+                        "id": "9",
+                        "name": "6%",
+                        "description": "Taxa reduzida (descontinuada)",
+                        "value": "6.00",
+                        "isActive": False,
+                    },
+                ],
+                "totalItems": 2,
+                "totalPages": 1,
+            },
         },
         status=200,
     )
@@ -90,8 +100,7 @@ def test_lookups_returns_taxes_and_units(logged_in_client, event):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["taxes"] == [{"id": 5, "label": "Normal - 23%"}]
-    assert data["units"] == [{"id": 1, "label": "Unit"}]
+    assert data["taxes"] == [{"id": "25", "label": "Taxa normal (23%)"}]
 
 
 @pytest.mark.django_db

@@ -62,9 +62,9 @@ Enable the plugin for an event, then configure it under **Settings → Fact.pt**
 
 * **API token (x-auth-token)** — your Fact.pt API token, sandbox or production.
 * **Use sandbox environment** — issue against Fact.pt's sandbox instead of production.
-* **VAT rate ID** and **Unit ID** — dropdowns populated live from your Fact.pt account
-  (``GET /taxes`` / ``GET /units``) as soon as a valid API token is entered, applied to every line
-  of every invoice issued for this event.
+* **VAT rate** — a dropdown populated live from your Fact.pt account (``GET /taxes``) as soon as a
+  valid API token is entered, applied to every line of every invoice issued for this event.
+* **Unit** — Fact.pt's fixed product-unit list (Units / Meters / Boxes / Kilograms / Liters).
 * **Item type** — ``service`` or ``product``, per Fact.pt's own item model.
 
 Once an order is paid, an invoice-receipt is issued asynchronously via Celery — see the "Fact.pt"

@@ -20,8 +20,18 @@ class FactptSettingsForm(SettingsForm):
             "Populated automatically as a dropdown once a valid API token is entered above."
         ),
     )
-    factpt_default_unit_id = forms.IntegerField(
-        label=_("Unit ID (Fact.pt)"),
+    # Fact.pt's product units are a fixed, documented list (not an API lookup) — same for
+    # every account, unlike VAT rates.
+    factpt_default_unit_id = forms.TypedChoiceField(
+        label=_("Unit (Fact.pt)"),
+        coerce=int,
+        choices=[
+            (1, _("Units")),
+            (2, _("Meters")),
+            (3, _("Boxes")),
+            (4, _("Kilograms")),
+            (5, _("Liters")),
+        ],
         initial=1,
     )
     factpt_default_type = forms.ChoiceField(

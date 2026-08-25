@@ -3,6 +3,7 @@ document.addEventListener("DOMContentLoaded", function () {
     if (!tokenField) return;
 
     var sandboxField = document.getElementById("id_factpt-factpt_sandbox");
+    var taxField = document.getElementById("id_factpt-factpt_default_tax_id");
     var statusField = document.getElementById("factpt-lookup-status");
     var lookupsUrl = window.location.pathname.replace(/\/?$/, "/") + "lookups/";
     var csrfToken = document.querySelector("input[name=csrfmiddlewaretoken]").value;
@@ -22,31 +23,45 @@ document.addEventListener("DOMContentLoaded", function () {
         return select;
     }
 
-    function populate(fieldId, items, currentValue) {
-        var select = toSelect(document.getElementById(fieldId));
+    function populateTaxes(items, currentValue) {
+        var select = toSelect(taxField);
         select.innerHTML = "";
+
+        var matched = false;
         items.forEach(function (item) {
             var option = document.createElement("option");
             option.value = item.id;
             option.textContent = item.label;
-            if (String(item.id) === String(currentValue)) option.selected = true;
+            if (currentValue && String(item.id) === String(currentValue)) {
+                option.selected = true;
+                matched = true;
+            }
             select.appendChild(option);
         });
+
+        // Keep the already-saved rate selectable even if it's inactive or missing from this
+        // fetch, so re-rendering the dropdown never silently changes a saved setting.
+        if (currentValue && !matched) {
+            var option = document.createElement("option");
+            option.value = currentValue;
+            option.textContent = currentValue + " (current)";
+            option.selected = true;
+            select.prepend(option);
+        }
+
+        taxField = select;
     }
 
     function loadOptions() {
         var token = tokenField.value.trim();
         if (!token) return;
 
-        var taxField = document.getElementById("id_factpt-factpt_default_tax_id");
-        var unitField = document.getElementById("id_factpt-factpt_default_unit_id");
         var currentTax = taxField.value;
-        var currentUnit = unitField.value;
         var body = new URLSearchParams();
         body.set("token", token);
         body.set("sandbox", sandboxField && sandboxField.checked ? "true" : "false");
 
-        setStatus("Loading VAT rate / unit options…", false);
+        setStatus("Loading VAT rate options…", false);
 
         fetch(lookupsUrl, {
             method: "POST",
@@ -64,17 +79,16 @@ document.addEventListener("DOMContentLoaded", function () {
             .then(function (result) {
                 if (!result.ok || result.data.error) {
                     setStatus(
-                        "Could not load options: " + (result.data.error || "unknown error"),
+                        "Could not load VAT rates: " + (result.data.error || "unknown error"),
                         true
                     );
                     return;
                 }
-                populate("id_factpt-factpt_default_tax_id", result.data.taxes, currentTax);
-                populate("id_factpt-factpt_default_unit_id", result.data.units, currentUnit);
+                populateTaxes(result.data.taxes, currentTax);
                 setStatus("", false);
             })
             .catch(function () {
-                setStatus("Could not reach the server to load options.", true);
+                setStatus("Could not reach the server to load VAT rates.", true);
             });
     }
 
