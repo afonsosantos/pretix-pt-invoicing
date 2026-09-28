@@ -1,8 +1,6 @@
-import logging
-
 from django.utils import timezone
 
-logger = logging.getLogger(__name__)
+from ...orderdata import bare_tin, client_name, one_line
 
 # Fact.pt's documented limits for the client block. Every one of these is a single line:
 # pretix's street is a TextField, so a buyer pressing Enter would otherwise send a newline
@@ -11,72 +9,6 @@ MAX_NAME = 100
 MAX_ADDRESS = 100
 MAX_CITY = 50
 MAX_EMAIL = 100
-
-
-def _one_line(value, limit):
-    # Collapse any whitespace run (newlines included) into single spaces, then truncate.
-    return " ".join(str(value).split())[:limit] if value else ""
-
-
-def is_valid_pt_nif(nif):
-    # Portuguese NIF check digit (mod 11). Worth having because the custom-field route
-    # below is free text typed by the buyer: an invalid number is rejected by the provider,
-    # which is a terminal failure for the whole document.
-    if len(nif) != 9 or not nif.isdigit():
-        return False
-    total = sum(int(d) * (9 - i) for i, d in enumerate(nif[:8]))
-    check = 11 - (total % 11)
-    return (0 if check >= 10 else check) == int(nif[8])
-
-
-def bare_tin(order, custom_field_is_nif=False):
-    """
-    The buyer's NIF, bare (no "PT" prefix), or None.
-
-    pretix only shows its own VAT ID field to buyers who tick "Business customer"
-    (`data-display-dependency` on `is_business`, hardcoded in pretix's invoice address
-    form), so an individual who wants their NIF on the invoice has nowhere to put it. The
-    usual way out is pretix's custom invoice-address field, which is shown to everyone —
-    `custom_field_is_nif` says the organizer has repurposed it for exactly that.
-    """
-    ia = getattr(order, "invoice_address", None)
-    if not ia:
-        return None
-
-    vat_id = (getattr(ia, "vat_id", None) or "").strip()
-    from_custom_field = False
-    if not vat_id and custom_field_is_nif:
-        vat_id = (getattr(ia, "custom_field", None) or "").strip()
-        from_custom_field = True
-    if not vat_id:
-        return None
-
-    looks_portuguese = vat_id.upper().startswith("PT") or (
-        ia.country and str(ia.country) == "PT"
-    )
-    tin = vat_id[2:].strip() if vat_id.upper().startswith("PT") else vat_id
-
-    if looks_portuguese and not is_valid_pt_nif(tin):
-        # Don't hand the provider a number that will bounce; issue to the final consumer
-        # instead, which is what would have happened without a NIF at all.
-        logger.warning(
-            "ptinvoicing: ignoring invalid NIF %r on order %s (from %s)",
-            tin,
-            order.code,
-            "custom field" if from_custom_field else "VAT ID field",
-        )
-        return None
-    return tin
-
-
-def client_name(order):
-    # Fact.pt has a single `name` field, no separate company field, so a business buyer's
-    # invoice has to carry the company there — that's the entity the invoice is made out
-    # to. Falls back to the person, then the email.
-    ia = getattr(order, "invoice_address", None)
-    company = ia and getattr(ia, "company", None)
-    person = ia and getattr(ia, "name", None)
-    return _one_line(company or person or order.email or "Consumidor Final", MAX_NAME)
 
 
 def build_client_block(
@@ -92,15 +24,15 @@ def build_client_block(
     tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
 
     client = {
-        "name": client_name(order),
-        "address": _one_line(ia and ia.street, MAX_ADDRESS) or "-",
-        "city": _one_line(ia and ia.city, MAX_CITY) or "-",
-        "zip": _one_line(ia and ia.zipcode, 30) or "-",
+        "name": client_name(order, MAX_NAME),
+        "address": one_line(ia and ia.street, MAX_ADDRESS) or "-",
+        "city": one_line(ia and ia.city, MAX_CITY) or "-",
+        "zip": one_line(ia and ia.zipcode, 30) or "-",
         "country": (ia.country.code if ia and ia.country else "PT"),
     }
 
     if send_email and order.email:
-        client["email"] = _one_line(order.email, MAX_EMAIL)
+        client["email"] = one_line(order.email, MAX_EMAIL)
 
     if tin:
         client["tin"] = tin

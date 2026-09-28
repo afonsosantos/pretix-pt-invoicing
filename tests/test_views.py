@@ -6,6 +6,7 @@ from django_scopes import scopes_disabled
 from pretix.base.models import Order, Team, User
 
 from pretix_ptinvoicing.models import IssuedInvoice
+from pretix_ptinvoicing.providers import PROVIDERS
 from tests.conftest import mock_factpt_taxes
 
 SETTINGS_URL = "/control/event/{}/{}/invoicing/settings/"
@@ -419,3 +420,43 @@ def test_no_template_comment_leaks_onto_the_settings_page(logged_in_client, even
     ).content.decode()
     assert "{#" not in body
     assert "provider-agnostic setting" not in body
+
+
+@pytest.mark.django_db
+def test_saving_one_provider_leaves_the_other_untouched(logged_in_client, event):
+    # Only testable now that a second provider exists: SettingsView binds just the selected
+    # provider's form, so the others keep their stored settings and can't block a save with
+    # their own required fields.
+    with scopes_disabled():
+        event.settings.factpt_token = "keep-me"
+        event.settings.factpt_default_tax_id = 5
+
+    response = logged_in_client.post(
+        SETTINGS_URL.format(event.organizer.slug, event.slug),
+        data={
+            "ptinvoicing_provider": "moloni",
+            "moloni-moloni_client_id": "cid",
+            "moloni-moloni_client_secret": "secret",
+            "moloni-moloni_username": "user",
+            "moloni-moloni_password": "pass",
+            "moloni-moloni_company_id": "7",
+            "moloni-moloni_document_set_id": "3",
+        },
+    )
+    assert response.status_code == 302
+
+    with scopes_disabled():
+        event.settings.flush()
+        assert event.settings.get("ptinvoicing_provider") == "moloni"
+        assert event.settings.get("moloni_company_id", as_type=int) == 7
+        # Fact.pt's required token was neither validated nor cleared.
+        assert event.settings.get("factpt_token") == "keep-me"
+
+
+@pytest.mark.django_db
+def test_settings_page_lists_every_registered_provider(logged_in_client, event):
+    body = logged_in_client.get(
+        SETTINGS_URL.format(event.organizer.slug, event.slug)
+    ).content.decode()
+    for identifier in PROVIDERS:
+        assert f'data-provider="{identifier}"' in body

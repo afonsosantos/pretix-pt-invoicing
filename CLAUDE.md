@@ -38,6 +38,11 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   reason as in `pretix-eupago`'s `CLAUDE.md`: pretix's plugin loader only appends the entry point's
   *module* portion to `INSTALLED_APPS`, and Django's app-config autodiscovery for a bare app name looks
   for `apps.py`, not `__init__.py`.
+- `pretix_ptinvoicing/orderdata.py` — reading buyer data off a pretix order, provider-independent:
+  `one_line`, `is_valid_pt_nif`, `bare_tin`, `client_name`, `FINAL_CONSUMER_NIF`. These started out
+  inside the Fact.pt provider; writing the Moloni one showed they are pretix-side and Portugal-side
+  concerns, not Fact.pt's, and a provider importing from a sibling provider is the smell that says
+  so. Field *limits* stay per provider — those are its API's rules.
 - `pretix_ptinvoicing/models.py` — `IssuedInvoice`: one row per issuance *attempt* against an `Order`
   for one provider (`order` FK, not one-to-one — a retry after a network failure reuses the same row
   via `get_or_create(order=..., provider=..., identifier_id=...)`, but a config change that alters
@@ -420,6 +425,27 @@ The entry point's *module* portion must resolve to a package with its own `apps.
 "Architecture" above. Note this is the *plugin* entry point (one per distribution); invoicing providers
 are **not** entry points, just entries in `providers.PROVIDERS`.
 
+### The Moloni provider
+
+`pretix_ptinvoicing/providers/moloni/` — the second provider, written as a proof that the core is
+genuinely provider-agnostic. **Built from Moloni's published documentation and exercised only
+against mocks**, unlike the Fact.pt one, which was settled against a real sandbox account. Treat
+every shape here as unverified until someone runs it against a real Moloni account: in particular
+whether `price` is net or gross (Moloni's docs don't say), and the exact `invoiceReceipts/insert`
+entity name.
+
+- `client.py` — OAuth rather than a static token: `GET /v1/grant/` with the password grant,
+  renewed with a 14-day refresh token, and the access token passed as a **GET parameter** on every
+  call. `on_token` hands each new pair back to the provider, which caches it in `event.settings` —
+  without that, every issuance would burn a fresh password grant.
+- `payload.py` — `customers/insert` shape plus the document's `products`/`payments` arrays. The
+  customer is a separate object: Moloni takes only `customer_id`, there is no inline client block.
+- `__init__.py` — `MoloniSettingsForm` (nine fields, four of them credentials) and
+  `MoloniProvider`. Its `lookups()` returns **four** dropdowns at once (company, document set, tax,
+  payment method) against credentials the admin hasn't saved yet, where Fact.pt's returns one —
+  same `{field: [{id, label}]}` contract, no change to `settings.js`.
+- `deduplicates_issuance = False`, which is the whole reason that flag exists.
+
 ## Would a second provider fit? (checked against Moloni's published API)
 
 The core was checked against a real second API rather than assumed to be general.
@@ -440,6 +466,11 @@ Fits as-is:
 - **PDF.** `documents/getPDFLink` returns a URL; `download()` fetches it and returns bytes.
 - **Lookups.** `document_set_id` and `tax_id` become dropdowns through the same
   `{field: [{id, label}]}` contract; `settings.js` needs no change.
+
+What writing it actually changed in the core (nothing structural, two things):
+- `orderdata.py` — the buyer-data helpers moved out of the Fact.pt provider, because Moloni needs
+  exactly the same NIF handling and a provider must not import from a sibling.
+- `deduplicates_issuance` — below.
 
 Did **not** fit, and is why `deduplicates_issuance` exists:
 - **No idempotency field.** `documents/insert` has nothing Moloni dedupes on — `our_reference` and

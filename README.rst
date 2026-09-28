@@ -31,8 +31,9 @@ Providers
 ============ =========== ==================================================================
 Provider     Identifier  Status
 ============ =========== ==================================================================
-`Fact.pt`_   ``factpt``  Implemented (see "Status" below)
-Moloni       —           Planned
+`Fact.pt`_   ``factpt``  Implemented, verified against a real sandbox account
+Moloni       ``moloni``  Implemented from the published API docs, **not yet run against a
+                         real account** — verify before production use
 ============ =========== ==================================================================
 
 One provider is active per event.

@@ -1,9 +1,10 @@
 from .base import InvoiceProvider, IssuedDocument, ProviderError
 from .factpt import FactptProvider
+from .moloni import MoloniProvider
 
 # Adding a provider: write it under providers/<name>/ and add it here. That's the whole
 # registration story — no entry points, no autodiscovery.
-PROVIDERS = {p.identifier: p for p in (FactptProvider,)}
+PROVIDERS = {p.identifier: p for p in (FactptProvider, MoloniProvider)}
 
 __all__ = [
     "PROVIDERS",

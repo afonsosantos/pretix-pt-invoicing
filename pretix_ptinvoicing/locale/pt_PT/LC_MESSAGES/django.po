@@ -4,9 +4,9 @@
 #
 msgid ""
 msgstr ""
-"Project-Id-Version: pretix-factpt\n"
+"Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 20:13+0100\n"
+"POT-Creation-Date: 2026-09-28 20:49+0100\n"
 "PO-Revision-Date: 2026-08-25 19:30+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -19,8 +19,14 @@ msgstr ""
 msgid "Portuguese invoicing"
 msgstr "Faturação portuguesa"
 
-msgid "Issues AT-certified invoice-receipts through a Portuguese invoicing provider (currently Fact.pt) asynchronously after payment confirmation, with a tracking and retry panel."
-msgstr "Emite faturas-recibo certificadas pela AT através de um fornecedor de faturação português (atualmente o Fact.pt), de forma assíncrona após a confirmação do pagamento, com um painel de acompanhamento e reemissão."
+msgid ""
+"Issues AT-certified invoice-receipts through a Portuguese invoicing provider "
+"(currently Fact.pt) asynchronously after payment confirmation, with a "
+"tracking and retry panel."
+msgstr ""
+"Emite faturas-recibo certificadas pela AT através de um fornecedor de "
+"faturação português (atualmente o Fact.pt), de forma assíncrona após a "
+"confirmação do pagamento, com um painel de acompanhamento e reemissão."
 
 msgid "Invoicing provider"
 msgstr "Fornecedor de faturação"
@@ -28,34 +34,68 @@ msgstr "Fornecedor de faturação"
 msgid "— none (no invoices are issued) —"
 msgstr "— nenhum (não são emitidas faturas) —"
 
-msgid "Only the selected provider's settings below are saved and used for issuance."
-msgstr "Só as definições do fornecedor selecionado abaixo são guardadas e usadas na emissão."
+msgid ""
+"Only the selected provider's settings below are saved and used for issuance."
+msgstr ""
+"Só as definições do fornecedor selecionado abaixo são guardadas e usadas na "
+"emissão."
 
 msgid "E-mail the invoice to the buyer"
 msgstr "Enviar a fatura por e-mail ao comprador"
 
-msgid "Sends the issued document as a PDF attachment once it is issued. pretix's own order e-mails don't carry it: the document belongs to the provider, not to pretix's invoice records."
-msgstr "Envia o documento emitido como anexo PDF assim que é emitido. Os e-mails de encomenda do pretix não o incluem: o documento pertence ao fornecedor e não aos registos de fatura do pretix."
+msgid ""
+"Sends the issued document as a PDF attachment once it is issued. pretix's "
+"own order e-mails don't carry it: the document belongs to the provider, not "
+"to pretix's invoice records."
+msgstr ""
+"Envia o documento emitido como anexo PDF assim que é emitido. Os e-mails de "
+"encomenda do pretix não o incluem: o documento pertence ao fornecedor e não "
+"aos registos de fatura do pretix."
 
 msgid "The custom invoice-address field holds the buyer's tax number"
 msgstr "O campo personalizado da morada de faturação contém o NIF do comprador"
 
-msgid "pretix only offers its VAT ID field to business customers, so individuals have nowhere to enter a tax number. Turn this on after adding a custom recipient field labelled e.g. \"NIF\" under Settings → Invoicing; it is then used as the tax number when the VAT ID field is empty. Portuguese numbers that fail their check digit are ignored, not sent."
-msgstr "O pretix só oferece o campo de NIF a clientes empresa, pelo que os particulares não têm onde o indicar. Ligue esta opção depois de criar um campo personalizado de destinatário com o rótulo \"NIF\" em Definições → Faturação; passa então a ser usado como NIF sempre que o campo de NIF estiver vazio. Os números portugueses cujo dígito de controlo não confira são ignorados, não são enviados."
+msgid ""
+"pretix only offers its VAT ID field to business customers, so individuals "
+"have nowhere to enter a tax number. Turn this on after adding a custom "
+"recipient field labelled e.g. \"NIF\" under Settings → Invoicing; it is then "
+"used as the tax number when the VAT ID field is empty. Portuguese numbers "
+"that fail their check digit are ignored, not sent."
+msgstr ""
+"O pretix só oferece o campo de NIF a clientes empresa, pelo que os "
+"particulares não têm onde o indicar. Ligue esta opção depois de criar um "
+"campo personalizado de destinatário com o rótulo \"NIF\" em Definições → "
+"Faturação; passa então a ser usado como NIF sempre que o campo de NIF "
+"estiver vazio. Os números portugueses cujo dígito de controlo não confira "
+"são ignorados, não são enviados."
 
 msgid "Show the invoice on the buyer's order page"
 msgstr "Mostrar a fatura na página da encomenda do comprador"
 
 msgid "Adds a download link next to pretix's own invoice list."
-msgstr "Acrescenta uma ligação de descarga junto à lista de faturas do próprio pretix."
+msgstr ""
+"Acrescenta uma ligação de descarga junto à lista de faturas do próprio "
+"pretix."
 
 #, python-format
 msgid "Your invoice for order %(code)s"
 msgstr "A sua fatura da encomenda %(code)s"
 
 #, python-brace-format
-msgid "Hello,\n\nyour invoice for order {code} is attached to this e-mail.\n\nBest regards,\nYour {event} team"
-msgstr "Olá,\n\nsegue em anexo a sua fatura da encomenda {code}.\n\nCom os melhores cumprimentos,\nA equipa do {event}"
+msgid ""
+"Hello,\n"
+"\n"
+"your invoice for order {code} is attached to this e-mail.\n"
+"\n"
+"Best regards,\n"
+"Your {event} team"
+msgstr ""
+"Olá,\n"
+"\n"
+"segue em anexo a sua fatura da encomenda {code}.\n"
+"\n"
+"Com os melhores cumprimentos,\n"
+"A equipa do {event}"
 
 msgid "Processing"
 msgstr "A processar"
@@ -78,10 +118,13 @@ msgstr "A chave de sandbox e a chave de produção são diferentes no Fact.pt."
 msgid "VAT rate ID (Fact.pt)"
 msgstr "ID da taxa de IVA (Fact.pt)"
 
-msgid "Populated automatically as a dropdown once a valid API token is entered above."
-msgstr "Preenchido automaticamente como lista quando é introduzido um token de API válido acima."
+msgid ""
+"Populated automatically as a dropdown once a valid API token is entered "
+"above."
+msgstr ""
 "Preenchido automaticamente como lista quando é introduzido um token de API "
-"válido acima."
+"válido acima.Preenchido automaticamente como lista quando é introduzido um "
+"token de API válido acima."
 
 msgid "Unit (Fact.pt)"
 msgstr "Unidade (Fact.pt)"
@@ -113,16 +156,28 @@ msgstr "Produto"
 msgid "Send the buyer's e-mail address to Fact.pt"
 msgstr "Enviar o e-mail do comprador para o Fact.pt"
 
-msgid "Stores the e-mail on the Fact.pt client record, which lets Fact.pt send the document to the buyer. Off by default: pretix already e-mails the buyer."
-msgstr "Guarda o e-mail na ficha de cliente do Fact.pt, o que permite ao Fact.pt enviar o documento ao comprador. Desligado por omissão: o pretix já envia e-mail ao comprador."
+msgid ""
+"Stores the e-mail on the Fact.pt client record, which lets Fact.pt send the "
+"document to the buyer. Off by default: pretix already e-mails the buyer."
+msgstr ""
+"Guarda o e-mail na ficha de cliente do Fact.pt, o que permite ao Fact.pt "
+"enviar o documento ao comprador. Desligado por omissão: o pretix já envia e-"
+"mail ao comprador."
 
 #, python-format
 msgid "VAT rate %(id)s does not exist in this Fact.pt account."
 msgstr "A taxa de IVA %(id)s não existe nesta conta Fact.pt."
 
 #, python-format
-msgid "VAT mismatch: pretix charged %(pretix)s%% on this order but the configured Fact.pt rate is %(factpt)s%% (%(label)s). The invoice would be issued for the wrong amount. Fix the event's tax rule or the Fact.pt VAT rate setting."
-msgstr "Divergência de IVA: o pretix cobrou %(pretix)s%% nesta encomenda mas a taxa configurada no Fact.pt é %(factpt)s%% (%(label)s). A fatura seria emitida com o valor errado. Corrija a regra de IVA do evento ou a definição da taxa de IVA do Fact.pt."
+msgid ""
+"VAT mismatch: pretix charged %(pretix)s%% on this order but the configured "
+"Fact.pt rate is %(factpt)s%% (%(label)s). The invoice would be issued for "
+"the wrong amount. Fix the event's tax rule or the Fact.pt VAT rate setting."
+msgstr ""
+"Divergência de IVA: o pretix cobrou %(pretix)s%% nesta encomenda mas a taxa "
+"configurada no Fact.pt é %(factpt)s%% (%(label)s). A fatura seria emitida "
+"com o valor errado. Corrija a regra de IVA do evento ou a definição da taxa "
+"de IVA do Fact.pt."
 
 msgid "No API token provided."
 msgstr "Nenhum token da API fornecido."
@@ -141,6 +196,80 @@ msgstr "Erro desconhecido do Fact.pt"
 #, python-format
 msgid "Could not download the document from Fact.pt: %(error)s"
 msgstr "Não foi possível descarregar o documento do Fact.pt: %(error)s"
+
+msgid "Developer ID (client_id)"
+msgstr "ID de programador (client_id)"
+
+msgid "Client secret"
+msgstr "Segredo do cliente"
+
+msgid "Moloni username"
+msgstr "Utilizador Moloni"
+
+msgid "Moloni password"
+msgstr "Palavra-passe Moloni"
+
+msgid "Company (Moloni)"
+msgstr "Empresa (Moloni)"
+
+
+msgid "Populated automatically once the credentials above are valid."
+msgstr "Preenchido automaticamente quando as credenciais acima forem válidas."
+
+msgid "Document set (Moloni)"
+msgstr "Série de documentos (Moloni)"
+
+msgid "VAT rate (Moloni)"
+msgstr "Taxa de IVA (Moloni)"
+
+msgid "Exemption reason"
+msgstr "Motivo de isenção"
+
+msgid "Required on 0% lines, e.g. \"M07\" for Artigo 9.º do CIVA."
+msgstr "Obrigatório nas linhas a 0%, por exemplo \"M07\" para o Artigo 9.º do CIVA."
+
+msgid "Payment method (Moloni)"
+msgstr "Forma de pagamento (Moloni)"
+
+msgid "Used for the receipt half of the invoice-receipt."
+msgstr "Usada na parte de recibo da fatura-recibo."
+
+msgid "Moloni did not return a customer id."
+msgstr "O Moloni não devolveu um id de cliente."
+
+msgid "Moloni did not return a document id."
+msgstr "O Moloni não devolveu um id de documento."
+
+msgid "Moloni did not return a PDF link."
+msgstr "O Moloni não devolveu uma ligação para o PDF."
+
+#, python-format
+msgid "Could not download the document from Moloni: %(error)s"
+msgstr "Não foi possível descarregar o documento do Moloni: %(error)s"
+
+msgid "Fill in the Moloni credentials first."
+msgstr "Preencha primeiro as credenciais do Moloni."
+
+#, python-format
+msgid "Could not reach Moloni: %(error)s"
+msgstr "Não foi possível contactar o Moloni: %(error)s"
+
+#, python-format
+msgid "Invalid response from Moloni (HTTP %(status)s)"
+msgstr "Resposta inválida do Moloni (HTTP %(status)s)"
+
+msgid "Moloni refused the credentials."
+msgstr "O Moloni recusou as credenciais."
+
+msgid "Moloni credentials are incomplete."
+msgstr "As credenciais do Moloni estão incompletas."
+
+msgid "Moloni rejected the request."
+msgstr "O Moloni rejeitou o pedido."
+
+#, python-format
+msgid "Moloni returned HTTP %(status)s"
+msgstr "O Moloni devolveu HTTP %(status)s"
 
 msgid "Invoicing (PT)"
 msgstr "Faturação PT"
@@ -207,11 +336,19 @@ msgstr "Reemitir"
 msgid "Issue invoice now"
 msgstr "Emitir fatura agora"
 
-msgid "Fix the underlying data or settings first — the provider rejected this document."
-msgstr "Corrija primeiro os dados ou as definições — o fornecedor rejeitou este documento."
+msgid ""
+"Fix the underlying data or settings first — the provider rejected this "
+"document."
+msgstr ""
+"Corrija primeiro os dados ou as definições — o fornecedor rejeitou este "
+"documento."
 
-msgid "Pick the invoicing provider to issue invoice-receipts with once payment is confirmed, and configure its API access below."
-msgstr "Escolha o fornecedor de faturação para emitir faturas-recibo depois de o pagamento ser confirmado e configure o acesso à sua API abaixo."
+msgid ""
+"Pick the invoicing provider to issue invoice-receipts with once payment is "
+"confirmed, and configure its API access below."
+msgstr ""
+"Escolha o fornecedor de faturação para emitir faturas-recibo depois de o "
+"pagamento ser confirmado e configure o acesso à sua API abaixo."
 
 msgid "Save"
 msgstr "Guardar"
@@ -240,4 +377,3 @@ msgstr "Definições de faturação guardadas."
 #~ msgstr ""
 #~ "Configure aqui o acesso à API do Fact.pt usada para emitir Faturas-Recibo "
 #~ "após pagamento confirmado."
-

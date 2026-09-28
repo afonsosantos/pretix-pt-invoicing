@@ -4,9 +4,10 @@ from django import forms
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
 
+from ...orderdata import bare_tin, client_name
 from ..base import InvoiceProvider, IssuedDocument, ProviderError
 from .client import FactptAPIError, FactptClient
-from .payload import bare_tin, build_payload, client_name
+from .payload import build_payload
 
 __all__ = ["FactptAPIError", "FactptClient", "FactptProvider", "FactptSettingsForm"]
 

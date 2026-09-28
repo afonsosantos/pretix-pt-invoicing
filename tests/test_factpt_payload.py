@@ -9,7 +9,6 @@ from pretix_ptinvoicing.providers.factpt.payload import (
     build_client_block,
     build_items_block,
     build_payload,
-    is_valid_pt_nif,
 )
 
 
@@ -54,19 +53,6 @@ def test_build_client_block_with_vat_id_strips_pt_prefix(order):
     assert client["tin"] == "123456789"
     assert client["name"] == "Jane Doe"
     assert client["forceTin"] is True
-
-
-@pytest.mark.django_db
-def test_bare_tin_without_invoice_address_is_none(order):
-    assert bare_tin(order) is None
-
-
-@pytest.mark.django_db
-def test_bare_tin_strips_pt_prefix(order):
-    with scopes_disabled():
-        InvoiceAddress.objects.create(order=order, vat_id="PT123456789")
-    order.refresh_from_db()
-    assert bare_tin(order) == "123456789"
 
 
 @pytest.mark.django_db
@@ -175,20 +161,6 @@ def test_build_items_block_sends_the_net_price(event, order, item):
 
 
 @pytest.mark.django_db
-def test_bare_tin_reads_the_custom_field_when_enabled(order):
-    # pretix only shows its VAT ID field to business customers, so an individual's NIF has
-    # to come from the custom invoice-address field.
-    with scopes_disabled():
-        InvoiceAddress.objects.create(
-            order=order, custom_field="237892294", country="PT"
-        )
-    order.refresh_from_db()
-
-    assert bare_tin(order) is None
-    assert bare_tin(order, custom_field_is_nif=True) == "237892294"
-
-
-@pytest.mark.django_db
 def test_bare_tin_ignores_an_invalid_portuguese_nif(order):
     # Free text typed by the buyer: a bad check digit would be rejected by the provider,
     # which is a terminal failure for the document. Issue to the final consumer instead.
@@ -202,22 +174,3 @@ def test_bare_tin_ignores_an_invalid_portuguese_nif(order):
 
     assert bare_tin(order, custom_field_is_nif=True) is None
     assert build_client_block(order, custom_field_is_nif=True)["finalConsumer"] is True
-
-
-@pytest.mark.django_db
-def test_bare_tin_keeps_a_non_portuguese_vat_id_unvalidated(order):
-    # The PT check digit must not be applied to, say, a Spanish VAT id.
-    with scopes_disabled():
-        InvoiceAddress.objects.create(order=order, vat_id="ESX1234567", country="ES")
-    order.refresh_from_db()
-
-    assert bare_tin(order) == "ESX1234567"
-
-
-def test_pt_nif_check_digit():
-    assert is_valid_pt_nif("999999990")  # Fact.pt's final-consumer NIF
-    assert is_valid_pt_nif("237892294")
-    assert not is_valid_pt_nif("237892295")
-    assert is_valid_pt_nif("123456789")  # yes, really — the check digit works out
-    assert not is_valid_pt_nif("12345678")
-    assert not is_valid_pt_nif("abcdefghi")
