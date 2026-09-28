@@ -35,15 +35,21 @@ call_command('makemessages', locale='$(LOCALES)'.split(), extensions=['html', 't
 
 # Compile .po -> .mo so translations actually load at runtime. Must run before uv build,
 # since only .mo files are shipped/read — package-data in pyproject.toml only picks up
-# whatever's already on disk.
+# whatever's already on disk. CI runs this in the build job, so a release never depends on
+# someone having remembered to recompile.
+#
+# Plain msgfmt, not Django's compilemessages: that is what compilemessages shells out to
+# anyway, and calling it directly means this needs neither a virtualenv nor Django — which
+# is what lets the CI build job run it without installing pretix. --check also validates
+# the catalogue, so a translation with a broken format specifier (a %(name)s that the
+# msgid doesn't have) fails here instead of at runtime.
+LOCALE_DIR = pretix_ptinvoicing/locale
 compile-translations:
-	cd pretix_ptinvoicing && $(CURDIR)/.venv/bin/python3 -c "\
-import django; \
-from django.conf import settings; \
-settings.configure(USE_I18N=True); \
-django.setup(); \
-from django.core.management import call_command; \
-call_command('compilemessages', locale='$(LOCALES)'.split())"
+	@for loc in $(LOCALES); do \
+		echo "compiling $$loc"; \
+		msgfmt --check -o $(LOCALE_DIR)/$$loc/LC_MESSAGES/django.mo \
+			$(LOCALE_DIR)/$$loc/LC_MESSAGES/django.po; \
+	done
 
 bump-version:
 	@version="$(filter-out $@,$(MAKECMDGOALS))"; \

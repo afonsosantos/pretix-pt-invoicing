@@ -361,9 +361,14 @@ Two things to watch after a `make translate`:
 
 - `make translate` — extracts `_()`/`gettext_lazy()`/`{% trans %}` strings into
   `locale/<lang>/LC_MESSAGES/django.po` (merging into any existing translations).
-- `make compile-translations` — compiles `.po` → `.mo`. **Must run before `uv build`** — only
-  `.mo` files are loaded at runtime, and `package-data` in `pyproject.toml` just ships whatever's
-  already on disk; it doesn't compile anything.
+- `make compile-translations` — compiles `.po` → `.mo` with plain `msgfmt --check`, not Django's
+  `compilemessages`. That is what `compilemessages` shells out to anyway, and calling it directly
+  means the target needs neither a virtualenv nor Django — which is what lets **CI's `build` job run
+  it before `uv build`**, so a release no longer depends on the committed `.mo` being current (only
+  `.mo` files are loaded at runtime, and `package-data` just ships whatever is on disk). Verified
+  byte-identical to what `compilemessages` produced. `--check` also fails on a translation whose
+  format specifiers don't match the msgid, which would otherwise crash at runtime.
+  Keep committing the `.mo` anyway: an editable install from a checkout doesn't run the Makefile.
 - To add a language: `mkdir -p pretix_ptinvoicing/locale/<lang>/LC_MESSAGES`, add it to `LOCALES` in
   the `Makefile`, then `make translate`.
 - Both targets deliberately configure a bare `django.conf.settings.configure(USE_I18N=True)` instead of
