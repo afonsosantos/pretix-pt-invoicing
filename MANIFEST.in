@@ -1,4 +1,4 @@
 include README.rst LICENSE
-recursive-include pretix_factpt/templates *
-recursive-include pretix_factpt/locale *
-recursive-include pretix_factpt/static *
+recursive-include pretix_ptinvoicing/templates *
+recursive-include pretix_ptinvoicing/locale *
+recursive-include pretix_ptinvoicing/static *

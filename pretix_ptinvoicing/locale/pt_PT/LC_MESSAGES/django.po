@@ -1,0 +1,243 @@
+# Portuguese (Portugal) translations for pretix-factpt.
+# Copyright (C) 2026 Afonso Santos
+# This file is distributed under the same license as the pretix-factpt package.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: pretix-factpt\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-09-28 20:13+0100\n"
+"PO-Revision-Date: 2026-08-25 19:30+0100\n"
+"Last-Translator: Afonso Santos\n"
+"Language-Team: Portuguese (Portugal)\n"
+"Language: pt_PT\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "Portuguese invoicing"
+msgstr "Faturação portuguesa"
+
+msgid "Issues AT-certified invoice-receipts through a Portuguese invoicing provider (currently Fact.pt) asynchronously after payment confirmation, with a tracking and retry panel."
+msgstr "Emite faturas-recibo certificadas pela AT através de um fornecedor de faturação português (atualmente o Fact.pt), de forma assíncrona após a confirmação do pagamento, com um painel de acompanhamento e reemissão."
+
+msgid "Invoicing provider"
+msgstr "Fornecedor de faturação"
+
+msgid "— none (no invoices are issued) —"
+msgstr "— nenhum (não são emitidas faturas) —"
+
+msgid "Only the selected provider's settings below are saved and used for issuance."
+msgstr "Só as definições do fornecedor selecionado abaixo são guardadas e usadas na emissão."
+
+msgid "E-mail the invoice to the buyer"
+msgstr "Enviar a fatura por e-mail ao comprador"
+
+msgid "Sends the issued document as a PDF attachment once it is issued. pretix's own order e-mails don't carry it: the document belongs to the provider, not to pretix's invoice records."
+msgstr "Envia o documento emitido como anexo PDF assim que é emitido. Os e-mails de encomenda do pretix não o incluem: o documento pertence ao fornecedor e não aos registos de fatura do pretix."
+
+msgid "The custom invoice-address field holds the buyer's tax number"
+msgstr "O campo personalizado da morada de faturação contém o NIF do comprador"
+
+msgid "pretix only offers its VAT ID field to business customers, so individuals have nowhere to enter a tax number. Turn this on after adding a custom recipient field labelled e.g. \"NIF\" under Settings → Invoicing; it is then used as the tax number when the VAT ID field is empty. Portuguese numbers that fail their check digit are ignored, not sent."
+msgstr "O pretix só oferece o campo de NIF a clientes empresa, pelo que os particulares não têm onde o indicar. Ligue esta opção depois de criar um campo personalizado de destinatário com o rótulo \"NIF\" em Definições → Faturação; passa então a ser usado como NIF sempre que o campo de NIF estiver vazio. Os números portugueses cujo dígito de controlo não confira são ignorados, não são enviados."
+
+msgid "Show the invoice on the buyer's order page"
+msgstr "Mostrar a fatura na página da encomenda do comprador"
+
+msgid "Adds a download link next to pretix's own invoice list."
+msgstr "Acrescenta uma ligação de descarga junto à lista de faturas do próprio pretix."
+
+#, python-format
+msgid "Your invoice for order %(code)s"
+msgstr "A sua fatura da encomenda %(code)s"
+
+#, python-brace-format
+msgid "Hello,\n\nyour invoice for order {code} is attached to this e-mail.\n\nBest regards,\nYour {event} team"
+msgstr "Olá,\n\nsegue em anexo a sua fatura da encomenda {code}.\n\nCom os melhores cumprimentos,\nA equipa do {event}"
+
+msgid "Processing"
+msgstr "A processar"
+
+msgid "Issued"
+msgstr "Emitida"
+
+msgid "Error"
+msgstr "Erro"
+
+msgid "API token (x-auth-token)"
+msgstr "Token da API (x-auth-token)"
+
+msgid "Use sandbox environment"
+msgstr "Usar ambiente de testes (sandbox)"
+
+msgid "The sandbox and production API tokens are different in Fact.pt."
+msgstr "A chave de sandbox e a chave de produção são diferentes no Fact.pt."
+
+msgid "VAT rate ID (Fact.pt)"
+msgstr "ID da taxa de IVA (Fact.pt)"
+
+msgid "Populated automatically as a dropdown once a valid API token is entered above."
+msgstr "Preenchido automaticamente como lista quando é introduzido um token de API válido acima."
+"Preenchido automaticamente como lista quando é introduzido um token de API "
+"válido acima."
+
+msgid "Unit (Fact.pt)"
+msgstr "Unidade (Fact.pt)"
+
+msgid "Units"
+msgstr "Unidades"
+
+msgid "Meters"
+msgstr "Metros"
+
+msgid "Boxes"
+msgstr "Caixas"
+
+msgid "Kilograms"
+msgstr "Kilos"
+
+msgid "Liters"
+msgstr "Litros"
+
+msgid "Item type"
+msgstr "Tipo de item"
+
+msgid "Service"
+msgstr "Serviço"
+
+msgid "Product"
+msgstr "Produto"
+
+msgid "Send the buyer's e-mail address to Fact.pt"
+msgstr "Enviar o e-mail do comprador para o Fact.pt"
+
+msgid "Stores the e-mail on the Fact.pt client record, which lets Fact.pt send the document to the buyer. Off by default: pretix already e-mails the buyer."
+msgstr "Guarda o e-mail na ficha de cliente do Fact.pt, o que permite ao Fact.pt enviar o documento ao comprador. Desligado por omissão: o pretix já envia e-mail ao comprador."
+
+#, python-format
+msgid "VAT rate %(id)s does not exist in this Fact.pt account."
+msgstr "A taxa de IVA %(id)s não existe nesta conta Fact.pt."
+
+#, python-format
+msgid "VAT mismatch: pretix charged %(pretix)s%% on this order but the configured Fact.pt rate is %(factpt)s%% (%(label)s). The invoice would be issued for the wrong amount. Fix the event's tax rule or the Fact.pt VAT rate setting."
+msgstr "Divergência de IVA: o pretix cobrou %(pretix)s%% nesta encomenda mas a taxa configurada no Fact.pt é %(factpt)s%% (%(label)s). A fatura seria emitida com o valor errado. Corrija a regra de IVA do evento ou a definição da taxa de IVA do Fact.pt."
+
+msgid "No API token provided."
+msgstr "Nenhum token da API fornecido."
+
+#, python-format
+msgid "Could not reach Fact.pt: %(error)s"
+msgstr "Falha de ligação ao Fact.pt: %(error)s"
+
+#, python-format
+msgid "Invalid response from Fact.pt (HTTP %(status)s)"
+msgstr "Resposta inválida do Fact.pt (HTTP %(status)s)"
+
+msgid "Unknown error from Fact.pt"
+msgstr "Erro desconhecido do Fact.pt"
+
+#, python-format
+msgid "Could not download the document from Fact.pt: %(error)s"
+msgstr "Não foi possível descarregar o documento do Fact.pt: %(error)s"
+
+msgid "Invoicing (PT)"
+msgstr "Faturação PT"
+
+msgid "Issued invoice-receipts"
+msgstr "Faturas-recibo emitidas"
+
+msgid "All statuses"
+msgstr "Todos os estados"
+
+msgid "Order"
+msgstr "Encomenda"
+
+msgid "Provider"
+msgstr "Fornecedor"
+
+msgid "Status"
+msgstr "Estado"
+
+msgid "Document"
+msgstr "Documento"
+
+msgid "Attempts"
+msgstr "Tentativas"
+
+msgid "Last updated"
+msgstr "Última atualização"
+
+msgid "Retry"
+msgstr "Tentar novamente"
+
+msgid "No invoices processed yet."
+msgstr "Ainda não há faturas processadas."
+
+#, python-format
+msgid "Invoicing (PT) — %(provider)s"
+msgstr "Faturação PT — %(provider)s"
+
+#, python-format
+msgid "Open at %(provider)s"
+msgstr "Abrir no %(provider)s"
+
+msgid "Last attempt"
+msgstr "Última tentativa"
+
+#, python-format
+msgid "%(attempts)s attempt"
+msgid_plural "%(attempts)s attempts"
+msgstr[0] "%(attempts)s tentativa"
+msgstr[1] "%(attempts)s tentativas"
+
+msgid "No invoice issued for this order yet."
+msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
+
+msgid "Invoices are only issued once the order is paid."
+msgstr "As faturas só são emitidas depois de a encomenda estar paga."
+
+msgid "Download PDF"
+msgstr "Descarregar PDF"
+
+msgid "Retry issuance"
+msgstr "Reemitir"
+
+msgid "Issue invoice now"
+msgstr "Emitir fatura agora"
+
+msgid "Fix the underlying data or settings first — the provider rejected this document."
+msgstr "Corrija primeiro os dados ou as definições — o fornecedor rejeitou este documento."
+
+msgid "Pick the invoicing provider to issue invoice-receipts with once payment is confirmed, and configure its API access below."
+msgstr "Escolha o fornecedor de faturação para emitir faturas-recibo depois de o pagamento ser confirmado e configure o acesso à sua API abaixo."
+
+msgid "Save"
+msgstr "Guardar"
+
+msgid "Download invoice"
+msgstr "Descarregar fatura"
+
+msgid "Issuance request sent to the provider."
+msgstr "Pedido de emissão enviado ao fornecedor."
+
+msgid "Unknown invoicing provider."
+msgstr "Fornecedor de faturação desconhecido."
+
+msgid "Invoicing settings saved."
+msgstr "Definições de faturação guardadas."
+
+#~ msgid "Fact.pt"
+#~ msgstr "Fact.pt"
+
+#~ msgid "Invoice-Receipts — Fact.pt"
+#~ msgstr "Faturas-Recibo — Fact.pt"
+
+#~ msgid ""
+#~ "Configure here the Fact.pt API access used to issue invoice-receipts "
+#~ "after payment is confirmed."
+#~ msgstr ""
+#~ "Configure aqui o acesso à API do Fact.pt usada para emitir Faturas-Recibo "
+#~ "após pagamento confirmado."
+

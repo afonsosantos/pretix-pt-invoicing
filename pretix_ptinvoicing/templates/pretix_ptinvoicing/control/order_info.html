@@ -1,0 +1,96 @@
+{% load i18n %}
+{% if configured %}
+    <div class="panel panel-default">
+        <div class="panel-heading">
+            <h3 class="panel-title">
+                <span class="fa fa-file-text-o" aria-hidden="true"></span>
+                {% blocktrans trimmed with provider=provider.verbose_name %}
+                    Invoicing (PT) — {{ provider }}
+                {% endblocktrans %}
+            </h3>
+        </div>
+        <div class="panel-body">
+            {% if invoice %}
+                {# dl-horizontal is what pretix's own order panels use. #}
+                <dl class="dl-horizontal">
+                    <dt>{% trans "Status" %}</dt>
+                    <dd>
+                        {% if invoice.status == "success" %}
+                            <span class="label label-success">{% trans "Issued" %}</span>
+                        {% elif invoice.status == "error" %}
+                            <span class="label label-danger">{% trans "Error" %}</span>
+                        {% else %}
+                            <span class="label label-warning">{% trans "Processing" %}</span>
+                        {% endif %}
+                    </dd>
+
+                    {% if invoice.document_id %}
+                        <dt>{% trans "Document" %}</dt>
+                        <dd>
+                            {{ invoice.document_id }}
+                            {% if invoice.permanent_url %}
+                                &middot;
+                                <a href="{{ invoice.permanent_url }}" target="_blank" rel="noopener">
+                                    {% blocktrans trimmed with provider=provider.verbose_name %}
+                                        Open at {{ provider }}
+                                    {% endblocktrans %}
+                                    <span class="fa fa-external-link" aria-hidden="true"></span>
+                                </a>
+                            {% endif %}
+                        </dd>
+                    {% endif %}
+
+                    {% if invoice.status == "error" and invoice.error_message %}
+                        <dt>{% trans "Error" %}</dt>
+                        <dd class="text-danger">{{ invoice.error_message }}</dd>
+                    {% endif %}
+
+                    <dt>{% trans "Last attempt" %}</dt>
+                    <dd>
+                        {{ invoice.modified|date:"SHORT_DATETIME_FORMAT" }}
+                        <span class="text-muted">
+                            {% blocktrans trimmed count attempts=invoice.attempts %}
+                                {{ attempts }} attempt
+                            {% plural %}
+                                {{ attempts }} attempts
+                            {% endblocktrans %}
+                        </span>
+                    </dd>
+                </dl>
+            {% elif is_paid %}
+                <p class="text-muted">{% trans "No invoice issued for this order yet." %}</p>
+            {% else %}
+                <p class="text-muted">
+                    {% trans "Invoices are only issued once the order is paid." %}
+                </p>
+            {% endif %}
+        </div>
+
+        {% if is_paid %}
+            <div class="panel-footer">
+                {% if invoice.status == "success" %}
+                    <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}"
+                       class="btn btn-default" target="_blank">
+                        <span class="fa fa-download" aria-hidden="true"></span>
+                        {% trans "Download PDF" %}
+                    </a>
+                {% else %}
+                    <form method="post" class="form-inline"
+                          action="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
+                        {% csrf_token %}
+                        <input type="hidden" name="next" value="{{ request.path }}">
+                        <button type="submit" class="btn btn-default">
+                            <span class="fa fa-refresh" aria-hidden="true"></span>
+                            {% if invoice %}{% trans "Retry issuance" %}{% else %}{% trans "Issue invoice now" %}{% endif %}
+                        </button>
+                        {% if invoice.status == "error" %}
+                            <span class="help-block">
+                                {% trans "Fix the underlying data or settings first — the provider rejected this document." %}
+                            </span>
+                        {% endif %}
+                    </form>
+                {% endif %}
+            </div>
+        {% endif %}
+    </div>
+{% endif %}

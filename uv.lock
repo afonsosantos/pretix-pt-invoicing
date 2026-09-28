@@ -1943,8 +1943,20 @@ wheels = [
 ]
 
 [[package]]
-name = "pretix-factpt"
-version = "0.1.0"
+name = "pretix-plugin-build"
+version = "1.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/90/24/8c22f05ae41997b7893c045dd453b7bfedbb282895493213e587b968dcef/pretix_plugin_build-1.0.2.tar.gz", hash = "sha256:953387c128cbbf040e68926b88492798087f2ea0e1a73fa2a04991fd01895b3a", size = 1900, upload-time = "2026-07-22T11:16:28.602Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/67/35/973c99708d22c81388ce815e9f973d973474e2c011f4030481a4e05a5027/pretix_plugin_build-1.0.2-py3-none-any.whl", hash = "sha256:c30286db5c14fd0fe49f934af5823319bb60aabb6d7c51681b51f72b1b7931eb", size = 2160, upload-time = "2026-07-22T11:16:27.209Z" },
+]
+
+[[package]]
+name = "pretix-pt-invoicing"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "requests" },
@@ -1977,18 +1989,6 @@ provides-extras = ["test"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff" }]
-
-[[package]]
-name = "pretix-plugin-build"
-version = "1.0.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "django" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/90/24/8c22f05ae41997b7893c045dd453b7bfedbb282895493213e587b968dcef/pretix_plugin_build-1.0.2.tar.gz", hash = "sha256:953387c128cbbf040e68926b88492798087f2ea0e1a73fa2a04991fd01895b3a", size = 1900, upload-time = "2026-07-22T11:16:28.602Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/35/973c99708d22c81388ce815e9f973d973474e2c011f4030481a4e05a5027/pretix_plugin_build-1.0.2-py3-none-any.whl", hash = "sha256:c30286db5c14fd0fe49f934af5823319bb60aabb6d7c51681b51f72b1b7931eb", size = 2160, upload-time = "2026-07-22T11:16:27.209Z" },
-]
 
 [[package]]
 name = "prompt-toolkit"

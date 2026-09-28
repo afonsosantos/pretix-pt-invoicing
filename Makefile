@@ -14,9 +14,9 @@ format:
 	uv run ruff check --fix .
 	uv run ruff format .
 
-# Extract translatable strings into pretix_factpt/locale/<lang>/LC_MESSAGES/django.po.
+# Extract translatable strings into pretix_ptinvoicing/locale/<lang>/LC_MESSAGES/django.po.
 # Needs GNU gettext (xgettext/msguniq/msgmerge) installed. To add a new language, first
-# create its directory, e.g.: mkdir -p pretix_factpt/locale/de/LC_MESSAGES
+# create its directory, e.g.: mkdir -p pretix_ptinvoicing/locale/de/LC_MESSAGES
 #
 # Deliberately configures a bare Django settings object instead of using pretix's own
 # settings module: pretix.settings sets LOCALE_PATHS to pretix core's own bundled locale
@@ -25,7 +25,7 @@ format:
 # corrupts the installed pretix package's own translations with this plugin's strings.
 LOCALES = pt_PT
 translate:
-	cd pretix_factpt && $(CURDIR)/.venv/bin/python3 -c "\
+	cd pretix_ptinvoicing && $(CURDIR)/.venv/bin/python3 -c "\
 import django; \
 from django.conf import settings; \
 settings.configure(USE_I18N=True); \
@@ -37,7 +37,7 @@ call_command('makemessages', locale='$(LOCALES)'.split(), extensions=['html', 't
 # since only .mo files are shipped/read — package-data in pyproject.toml only picks up
 # whatever's already on disk.
 compile-translations:
-	cd pretix_factpt && $(CURDIR)/.venv/bin/python3 -c "\
+	cd pretix_ptinvoicing && $(CURDIR)/.venv/bin/python3 -c "\
 import django; \
 from django.conf import settings; \
 settings.configure(USE_I18N=True); \
@@ -52,8 +52,8 @@ bump-version:
 		exit 1; \
 	fi; \
 	sed -i.bak -E "s/^version = \".*\"/version = \"$$version\"/" pyproject.toml && rm pyproject.toml.bak; \
-	sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$$version\"/" pretix_factpt/__init__.py && rm pretix_factpt/__init__.py.bak; \
-	echo "Bumped version to $$version in pyproject.toml and pretix_factpt/__init__.py"
+	sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$$version\"/" pretix_ptinvoicing/__init__.py && rm pretix_ptinvoicing/__init__.py.bak; \
+	echo "Bumped version to $$version in pyproject.toml and pretix_ptinvoicing/__init__.py"
 
 # Swallow the version argument so make doesn't try to build it as a target.
 %:

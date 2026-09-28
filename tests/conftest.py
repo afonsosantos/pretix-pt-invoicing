@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+import responses
 from django.utils.timezone import now
 from django_scopes import scopes_disabled
 from pretix.base.models import Event, Item, Order, OrderPosition, Organizer
@@ -57,3 +58,32 @@ def position(order, item):
             item=item,
             price=Decimal("23.00"),
         )
+
+
+def mock_factpt_taxes(tax_id=5, value="0.00"):
+    """
+    Register the GET /taxes response every issuance now makes.
+
+    FactptProvider checks the configured Fact.pt rate against each position's tax_rate
+    before issuing, so any test that reaches the API needs this.
+    """
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/taxes",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {
+                "data": [
+                    {
+                        "id": str(tax_id),
+                        "name": f"{value}%",
+                        "description": "Taxa de teste",
+                        "value": value,
+                        "isActive": True,
+                    }
+                ],
+                "totalPages": 1,
+            },
+        },
+        status=200,
+    )

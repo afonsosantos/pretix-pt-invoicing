@@ -1,0 +1,42 @@
+{% extends "pretixcontrol/event/settings_base.html" %}
+{% load i18n %}
+{% load bootstrap3 %}
+{% load static %}
+{% block inside %}
+    <h1>{% trans "Invoicing (PT)" %}</h1>
+    <p>
+        {% blocktrans trimmed %}
+            Pick the invoicing provider to issue invoice-receipts with once payment is
+            confirmed, and configure its API access below.
+        {% endblocktrans %}
+    </p>
+    <form action="" method="post" class="form-horizontal" enctype="multipart/form-data">
+        {% csrf_token %}
+        {% bootstrap_form_errors select_form %}
+        {% comment %}
+            Whole form, not one named field: a new provider-agnostic setting should show
+            up here without anyone having to remember to edit this template.
+        {% endcomment %}
+        {% bootstrap_form select_form layout="horizontal" %}
+
+        {% for block in provider_blocks %}
+            <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}">
+                <legend>{{ block.label }}</legend>
+                {% bootstrap_form_errors block.form %}
+                {% bootstrap_form block.form layout="horizontal" %}
+                <div class="form-group">
+                    <div class="col-md-9 col-md-offset-3">
+                        <span class="help-block ptinvoicing-lookup-status"></span>
+                    </div>
+                </div>
+            </fieldset>
+        {% endfor %}
+
+        <div class="form-group submit-group">
+            <button type="submit" class="btn btn-primary btn-save">
+                {% trans "Save" %}
+            </button>
+        </div>
+    </form>
+    <script type="application/javascript" src="{% static 'pretix_ptinvoicing/settings.js' %}"></script>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% load i18n %}
+{% load eventurl %}
+{% load static %}
+{% comment %}
+    Same markup as pretix's own ticket download buttons (fragment_downloads.html): a
+    form.download-btn-form wrapping a button. That's what its CSS styles — the form is
+    display:inline and sibling forms get a .5em left margin — so the button lines up
+    beside the ticket buttons instead of dropping onto its own line.
+    ({% comment %}, not {# #}: the latter is single-line only and a multi-line one
+    renders straight onto the page.)
+{% endcomment %}
+<form class="download-btn-form ptinvoicing-invoice-download"
+      action="{% eventurl event "plugins:pretix_ptinvoicing:order_download" order=order.code secret=order.secret pk=invoice.pk %}"
+      method="get" target="_blank">
+    <button type="submit" class="btn btn-lg btn-default">
+        <span class="fa fa-file-text-o" aria-hidden="true"></span>
+        {% trans "Download invoice" %}
+    </button>
+</form>
+<script type="application/javascript" src="{% static 'pretix_ptinvoicing/presale.js' %}"></script>
