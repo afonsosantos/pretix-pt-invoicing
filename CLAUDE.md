@@ -67,9 +67,11 @@ invoice issuance itself hasn't. See "Known rough edges" below before relying on 
     client_id}`, referencing an existing Fact.pt client instead of describing one inline; this is what
     `tasks.py` passes when its `search_clients` lookup found exactly one match. Otherwise (the default),
     reads `order.invoice_address` (a `OneToOneField`, so it can be `None`). No NIF → `finalConsumer:
-    true`, and `tin`/`ric`/`retention` must be omitted entirely (Fact.pt rejects the request if they're
-    present alongside `finalConsumer: true`) — this code never sets `ric`/`retention` at all, so that's
-    automatic. NIF present → `tin` from `bare_tin(order)`, `finalConsumer: false`.
+    true`, `tin` omitted. NIF present → `tin` from `bare_tin(order)`, `finalConsumer: false`.
+    `retention: false` and `ric: false` are set **unconditionally**, on both branches — Fact.pt
+    requires both booleans on every client block (`"ric: The RIC is required.; retention: The
+    retention is required."` otherwise). Both hardcoded `false` because event ticket sales never
+    carry IRS/IRC withholding.
     `forceTin: true` is set **unconditionally**, on both branches — confirmed against Fact.pt's own
     `/clients` docs: it covers two distinct collisions, a NIF that already has a client record on file
     *or* (for Final Consumer) a name+country combo that already does. Either way it turns client

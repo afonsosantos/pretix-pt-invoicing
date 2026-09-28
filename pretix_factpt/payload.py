@@ -38,13 +38,18 @@ def build_client_block(order, client_id=None):
         # create — without it, a repeat buyer or a retry after a prior attempt already
         # registered the client fails with "clientBlock: Force update is not true."
         "forceTin": True,
+        # Both required by Fact.pt on every client block (error otherwise:
+        # "ric: The RIC is required.; retention: The retention is required."). Event
+        # ticket sales never carry IRS/IRC withholding, so both are always false.
+        # ponytail: hardcoded no-withholding; make per-event settings if that ever changes.
+        "retention": False,
+        "ric": False,
     }
 
     if has_tin:
         client["tin"] = bare_tin(order)
         client["finalConsumer"] = False
     else:
-        # Fact.pt requires omitting tin/ric/retention entirely when finalConsumer is true.
         client["finalConsumer"] = True
 
     return client
