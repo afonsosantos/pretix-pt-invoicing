@@ -73,6 +73,20 @@ class InvoiceProvider:
         """
         raise NotImplementedError
 
+    def credit(self, order, document_id, identifier_id):
+        """
+        Issue a credit note reversing `document_id` (the provider's id for the invoice
+        previously returned by issue()) and return an IssuedDocument.
+
+        `identifier_id` is this credit note's own idempotency key — same contract as
+        issue(). Every provider implemented so far only allows crediting a document's
+        *full* value, so there is no partial-refund shape here; a partial refund is the
+        caller's problem to reconcile some other way.
+        Raise ProviderError for a rejection (already credited, document not found); let
+        anything transient propagate as-is.
+        """
+        raise NotImplementedError
+
     def download(self, document_id):
         """Return the document's PDF bytes, or raise ProviderError."""
         raise NotImplementedError

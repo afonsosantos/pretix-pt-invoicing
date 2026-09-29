@@ -7,6 +7,7 @@ from pretix.base.models import InvoiceAddress, OrderPosition
 from pretix_ptinvoicing.providers.factpt.payload import (
     bare_tin,
     build_client_block,
+    build_credit_payload,
     build_items_block,
     build_payload,
 )
@@ -21,6 +22,17 @@ def test_build_payload_passes_identifier_id_through(event, order, position):
     assert payload["document"]["identifierId"] == "pretix-dummy-FOOBAR"
     assert payload["document"]["reference"] == "FOOBAR"
     assert len(payload["items"]) == 1
+
+
+@pytest.mark.django_db
+def test_build_credit_payload_has_no_client_or_items_block(order):
+    # POST /documents/{id}/credit only accepts date/comments/reference/identifierId/
+    # download/language — there's nothing to describe the client or line items with.
+    payload = build_credit_payload(order, "pretix-dummy-FOOBAR-credit")
+    assert payload["document"]["identifierId"] == "pretix-dummy-FOOBAR-credit"
+    assert payload["document"]["reference"] == "FOOBAR"
+    assert "client" not in payload
+    assert "items" not in payload
 
 
 @pytest.mark.django_db

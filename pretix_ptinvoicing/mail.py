@@ -9,19 +9,12 @@ from pretix.base.services.mail import mail
 logger = logging.getLogger(__name__)
 
 
-def send_invoice_email(order, provider, invoice):
-    """
-    E-mail the issued document to the buyer, as a PDF attachment.
+def _send_document_email(order, provider, invoice, subject, text, filename):
+    # Named mail.py, not email.py: email.py here would shadow stdlib email on sys.path,
+    # which is what `make translate` puts this directory on, breaking it.
+    # pretix's own order e-mails can't attach this: they only attach order.invoices.
+    # Failures are logged and swallowed — the document is already issued.
 
-    Named mail.py, not email.py, like pretix's own services: a module called email.py inside
-    the package shadows the stdlib email package for anything run with this directory on
-    sys.path — which is exactly what the Makefile's translate target does.
-
-    pretix's own order e-mails can't do this: they attach `order.invoices`, i.e. pretix's
-    own invoice records, and the provider's document isn't one. Failures here are logged
-    and swallowed — the document is already issued, and a mail problem must not flip a
-    successful issuance into an error or trigger the task's retry.
-    """
     try:
         pdf_bytes = provider.download(invoice.document_id)
     except Exception:
@@ -33,24 +26,15 @@ def send_invoice_email(order, provider, invoice):
         return
 
     cached = CachedFile.objects.create(
-        filename=f"{order.code}.pdf",
-        type="application/pdf",
-        web_download=False,
+        filename=filename, type="application/pdf", web_download=False
     )
-    cached.file.save(f"{order.code}.pdf", ContentFile(pdf_bytes))
+    cached.file.save(filename, ContentFile(pdf_bytes))
 
     try:
         mail(
             order.email,
-            _("Your invoice for order %(code)s") % {"code": order.code},
-            LazyI18nString.from_gettext(
-                _(
-                    "Hello,\n\n"
-                    "your invoice for order {code} is attached to this e-mail.\n\n"
-                    "Best regards,\n"
-                    "Your {event} team"
-                )
-            ),
+            subject,
+            text,
             {"code": order.code, "event": str(order.event.name)},
             event=order.event,
             order=order,
@@ -58,4 +42,42 @@ def send_invoice_email(order, provider, invoice):
             attach_cached_files=[cached],
         )
     except Exception:
-        logger.exception("ptinvoicing: could not e-mail the invoice for %s", order.code)
+        logger.exception(
+            "ptinvoicing: could not e-mail %s for %s", filename, order.code
+        )
+
+
+def send_invoice_email(order, provider, invoice):
+    _send_document_email(
+        order,
+        provider,
+        invoice,
+        subject=LazyI18nString.from_gettext(_("Your invoice for order {code}")),
+        text=LazyI18nString.from_gettext(
+            _(
+                "Hello,\n\n"
+                "your invoice for order {code} is attached to this e-mail.\n\n"
+                "Best regards,\n"
+                "Your {event} team"
+            )
+        ),
+        filename=f"{order.code}.pdf",
+    )
+
+
+def send_credit_note_email(order, provider, credit_note):
+    _send_document_email(
+        order,
+        provider,
+        credit_note,
+        subject=LazyI18nString.from_gettext(_("Your credit note for order {code}")),
+        text=LazyI18nString.from_gettext(
+            _(
+                "Hello,\n\n"
+                "a credit note for order {code} is attached to this e-mail.\n\n"
+                "Best regards,\n"
+                "Your {event} team"
+            )
+        ),
+        filename=f"{order.code}-credit.pdf",
+    )

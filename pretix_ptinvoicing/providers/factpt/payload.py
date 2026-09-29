@@ -107,3 +107,17 @@ def build_payload(order, event_settings, identifier_id, client_id=None):
         },
         "items": build_items_block(order, event_settings),
     }
+
+
+def build_credit_payload(order, identifier_id):
+    # POST /documents/{id}/credit only accepts date/comments/reference/identifierId/
+    # download/language — no client or items block, and the API only ever credits the
+    # referenced document's full value (one credit note per document, "de valor igual ao
+    # total do documento a creditar").
+    return {
+        "document": {
+            "date": timezone.now().date().isoformat(),
+            "reference": order.code,
+            "identifierId": identifier_id,
+        }
+    }

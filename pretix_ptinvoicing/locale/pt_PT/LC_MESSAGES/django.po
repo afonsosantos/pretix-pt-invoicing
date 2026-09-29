@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 20:49+0100\n"
+"POT-Creation-Date: 2026-09-29 19:53+0100\n"
 "PO-Revision-Date: 2026-08-25 19:30+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -40,18 +40,6 @@ msgstr ""
 "Só as definições do fornecedor selecionado abaixo são guardadas e usadas na "
 "emissão."
 
-msgid "E-mail the invoice to the buyer"
-msgstr "Enviar a fatura por e-mail ao comprador"
-
-msgid ""
-"Sends the issued document as a PDF attachment once it is issued. pretix's "
-"own order e-mails don't carry it: the document belongs to the provider, not "
-"to pretix's invoice records."
-msgstr ""
-"Envia o documento emitido como anexo PDF assim que é emitido. Os e-mails de "
-"encomenda do pretix não o incluem: o documento pertence ao fornecedor e não "
-"aos registos de fatura do pretix."
-
 msgid "The custom invoice-address field holds the buyer's tax number"
 msgstr "O campo personalizado da morada de faturação contém o NIF do comprador"
 
@@ -77,9 +65,21 @@ msgstr ""
 "Acrescenta uma ligação de descarga junto à lista de faturas do próprio "
 "pretix."
 
-#, python-format
-msgid "Your invoice for order %(code)s"
-msgstr "A sua fatura da encomenda %(code)s"
+msgid "E-mail the invoice-receipt to the buyer"
+msgstr "Enviar a fatura-recibo por e-mail ao comprador"
+
+msgid "Sends the issued document as a PDF attachment once it is issued."
+msgstr "Envia o documento emitido como anexo PDF assim que é emitido."
+
+msgid "E-mail the credit note to the buyer"
+msgstr "Enviar a nota de crédito por e-mail ao comprador"
+
+msgid "Sends the credit note as a PDF attachment once it is issued."
+msgstr "Envia a nota de crédito como anexo PDF assim que é emitida."
+
+#, python-brace-format
+msgid "Your invoice for order {code}"
+msgstr "A sua fatura da encomenda {code}"
 
 #, python-brace-format
 msgid ""
@@ -97,6 +97,26 @@ msgstr ""
 "Com os melhores cumprimentos,\n"
 "A equipa do {event}"
 
+#, python-brace-format
+msgid "Your credit note for order {code}"
+msgstr "A sua nota de crédito da encomenda {code}"
+
+#, python-brace-format
+msgid ""
+"Hello,\n"
+"\n"
+"a credit note for order {code} is attached to this e-mail.\n"
+"\n"
+"Best regards,\n"
+"Your {event} team"
+msgstr ""
+"Olá,\n"
+"\n"
+"segue em anexo a nota de crédito da encomenda {code}.\n"
+"\n"
+"Com os melhores cumprimentos,\n"
+"A equipa do {event}"
+
 msgid "Processing"
 msgstr "A processar"
 
@@ -105,6 +125,12 @@ msgstr "Emitida"
 
 msgid "Error"
 msgstr "Erro"
+
+msgid "Invoice"
+msgstr "Fatura"
+
+msgid "Credit note"
+msgstr "Nota de crédito"
 
 msgid "API token (x-auth-token)"
 msgstr "Token da API (x-auth-token)"
@@ -123,8 +149,7 @@ msgid ""
 "above."
 msgstr ""
 "Preenchido automaticamente como lista quando é introduzido um token de API "
-"válido acima.Preenchido automaticamente como lista quando é introduzido um "
-"token de API válido acima."
+"válido acima."
 
 msgid "Unit (Fact.pt)"
 msgstr "Unidade (Fact.pt)"
@@ -212,7 +237,6 @@ msgstr "Palavra-passe Moloni"
 msgid "Company (Moloni)"
 msgstr "Empresa (Moloni)"
 
-
 msgid "Populated automatically once the credentials above are valid."
 msgstr "Preenchido automaticamente quando as credenciais acima forem válidas."
 
@@ -226,7 +250,8 @@ msgid "Exemption reason"
 msgstr "Motivo de isenção"
 
 msgid "Required on 0% lines, e.g. \"M07\" for Artigo 9.º do CIVA."
-msgstr "Obrigatório nas linhas a 0%, por exemplo \"M07\" para o Artigo 9.º do CIVA."
+msgstr ""
+"Obrigatório nas linhas a 0%, por exemplo \"M07\" para o Artigo 9.º do CIVA."
 
 msgid "Payment method (Moloni)"
 msgstr "Forma de pagamento (Moloni)"
@@ -239,6 +264,13 @@ msgstr "O Moloni não devolveu um id de cliente."
 
 msgid "Moloni did not return a document id."
 msgstr "O Moloni não devolveu um id de documento."
+
+#, python-format
+msgid "Moloni could not find the original document %(id)s to credit."
+msgstr "O Moloni não encontrou o documento original %(id)s para creditar."
+
+msgid "Moloni did not return a credit note id."
+msgstr "O Moloni não devolveu um id de nota de crédito."
 
 msgid "Moloni did not return a PDF link."
 msgstr "O Moloni não devolveu uma ligação para o PDF."
@@ -286,6 +318,9 @@ msgstr "Encomenda"
 msgid "Provider"
 msgstr "Fornecedor"
 
+msgid "Kind"
+msgstr "Tipo"
+
 msgid "Status"
 msgstr "Estado"
 
@@ -308,12 +343,15 @@ msgstr "Ainda não há faturas processadas."
 msgid "Invoicing (PT) — %(provider)s"
 msgstr "Faturação PT — %(provider)s"
 
-#, python-format
-msgid "Open at %(provider)s"
-msgstr "Abrir no %(provider)s"
+msgid "Invoices are only issued once the order is paid."
+msgstr "As faturas só são emitidas depois de a encomenda estar paga."
 
 msgid "Last attempt"
 msgstr "Última tentativa"
+
+#, python-format
+msgid "Open at %(provider)s"
+msgstr "Abrir no %(provider)s"
 
 #, python-format
 msgid "%(attempts)s attempt"
@@ -321,27 +359,23 @@ msgid_plural "%(attempts)s attempts"
 msgstr[0] "%(attempts)s tentativa"
 msgstr[1] "%(attempts)s tentativas"
 
-msgid "No invoice issued for this order yet."
-msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
-
-msgid "Invoices are only issued once the order is paid."
-msgstr "As faturas só são emitidas depois de a encomenda estar paga."
-
 msgid "Download PDF"
 msgstr "Descarregar PDF"
 
 msgid "Retry issuance"
 msgstr "Reemitir"
 
+msgid "No invoice issued for this order yet."
+msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
+
 msgid "Issue invoice now"
 msgstr "Emitir fatura agora"
 
-msgid ""
-"Fix the underlying data or settings first — the provider rejected this "
-"document."
-msgstr ""
-"Corrija primeiro os dados ou as definições — o fornecedor rejeitou este "
-"documento."
+msgid "Retry credit note"
+msgstr "Repetir nota de crédito"
+
+msgid "Issue credit note"
+msgstr "Emitir nota de crédito"
 
 msgid ""
 "Pick the invoicing provider to issue invoice-receipts with once payment is "
@@ -349,6 +383,9 @@ msgid ""
 msgstr ""
 "Escolha o fornecedor de faturação para emitir faturas-recibo depois de o "
 "pagamento ser confirmado e configure o acesso à sua API abaixo."
+
+msgid "E-mail"
+msgstr "E-mail"
 
 msgid "Save"
 msgstr "Guardar"
@@ -359,11 +396,33 @@ msgstr "Descarregar fatura"
 msgid "Issuance request sent to the provider."
 msgstr "Pedido de emissão enviado ao fornecedor."
 
+msgid "Credit note request sent to the provider."
+msgstr "Pedido de nota de crédito enviado ao fornecedor."
+
 msgid "Unknown invoicing provider."
 msgstr "Fornecedor de faturação desconhecido."
 
 msgid "Invoicing settings saved."
 msgstr "Definições de faturação guardadas."
+
+#~ msgid ""
+#~ "Fix the underlying data or settings first — the provider rejected this "
+#~ "document."
+#~ msgstr ""
+#~ "Corrija primeiro os dados ou as definições — o fornecedor rejeitou este "
+#~ "documento."
+
+#~ msgid "Download credit note PDF"
+#~ msgstr "Descarregar PDF da nota de crédito"
+
+#~ msgid ""
+#~ "Sends the issued document as a PDF attachment once it is issued. pretix's "
+#~ "own order e-mails don't carry it: the document belongs to the provider, "
+#~ "not to pretix's invoice records."
+#~ msgstr ""
+#~ "Envia o documento emitido como anexo PDF assim que é emitido. Os e-mails "
+#~ "de encomenda do pretix não o incluem: o documento pertence ao fornecedor "
+#~ "e não aos registos de fatura do pretix."
 
 #~ msgid "Fact.pt"
 #~ msgstr "Fact.pt"

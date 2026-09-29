@@ -1,7 +1,12 @@
+from decimal import Decimal
+
+from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.template.loader import get_template
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+from django_scopes import scopes_disabled
+from pretix.base.models import OrderRefund
 from pretix.base.signals import order_paid
 from pretix.control.signals import nav_event, nav_event_settings
 from pretix.control.signals import order_info as control_order_info
@@ -9,13 +14,41 @@ from pretix.presale.signals import order_info_top as presale_order_info_top
 
 from .models import IssuedInvoice
 from .providers import get_provider
-from .tasks import issue_invoice
+from .tasks import issue_credit_note, issue_invoice
 
 
 @receiver(order_paid, dispatch_uid="ptinvoicing_order_paid")
 def ptinvoicing_order_paid(sender, order, **kwargs):
     # Only enqueues the Celery task — a slow/down provider never delays checkout.
     issue_invoice.apply_async(kwargs={"order_pk": order.pk, "event_pk": sender.pk})
+
+
+@receiver(post_save, sender=OrderRefund, dispatch_uid="ptinvoicing_refund_done")
+def ptinvoicing_refund_done(sender, instance, **kwargs):
+    """
+    Auto-issue a credit note once a refund actually completes.
+
+    OrderRefund has no EventPluginSignal the way order_paid/order_canceled do, so this is a
+    raw Django model signal instead — pretix's own bundled sendmail plugin hooks SubEvent
+    creation the same way. Unlike an EventPluginSignal it fires for every event regardless
+    of whether this plugin is enabled there, so that has to be checked by hand below.
+
+    Only fires once refunds have brought the order's net payment_refund_sum down to zero:
+    every provider here can only credit a document's *full* value, so a partial refund —
+    this one, or an earlier partial one that this one completes — is left for the admin's
+    manual "Issue credit note" button instead of crediting more than was actually refunded.
+    """
+    if instance.state != OrderRefund.REFUND_STATE_DONE:
+        return
+    with scopes_disabled():
+        order = instance.order
+        if "pretix_ptinvoicing" not in order.event.get_plugins():
+            return
+        if order.payment_refund_sum > Decimal("0.00"):
+            return
+        issue_credit_note.apply_async(
+            kwargs={"order_pk": order.pk, "event_pk": order.event_id}
+        )
 
 
 def _nav_entry(request, url_name, label, icon=None):
@@ -62,13 +95,17 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
     # to issue it now. Covers orders paid before the plugin was configured, and re-runs
     # after fixing whatever the provider rejected.
     provider = get_provider(sender)
+    invoice = IssuedInvoice.objects.filter(
+        order=order, kind=IssuedInvoice.KIND_INVOICE
+    ).first()
     ctx = {
         "order": order,
         "request": request,
         "event": sender,
         "provider": provider,
         "configured": bool(provider and provider.is_configured),
-        "invoice": IssuedInvoice.objects.filter(order=order).first(),
+        "invoice": invoice,
+        "credit_note": invoice.credit_notes.first() if invoice else None,
         "is_paid": order.status == order.STATUS_PAID,
     }
     # request= is required, not decoration: without it the template renders with a plain
@@ -90,7 +127,9 @@ def ptinvoicing_presale_order_info(sender, order, request, **kwargs):
         return ""
 
     invoice = IssuedInvoice.objects.filter(
-        order=order, status=IssuedInvoice.STATUS_SUCCESS
+        order=order,
+        kind=IssuedInvoice.KIND_INVOICE,
+        status=IssuedInvoice.STATUS_SUCCESS,
     ).first()
     if not invoice:
         return ""

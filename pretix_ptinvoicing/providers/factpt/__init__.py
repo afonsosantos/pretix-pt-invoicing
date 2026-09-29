@@ -7,7 +7,7 @@ from pretix.base.forms import SettingsForm
 from ...orderdata import bare_tin, client_name
 from ..base import InvoiceProvider, IssuedDocument, ProviderError
 from .client import FactptAPIError, FactptClient
-from .payload import build_payload
+from .payload import build_credit_payload, build_payload
 
 __all__ = ["FactptAPIError", "FactptClient", "FactptProvider", "FactptSettingsForm"]
 
@@ -163,6 +163,17 @@ class FactptProvider(InvoiceProvider):
             client_id=self._resolve_client_id(client, order),
         )
         result = client.create_invoice_receipt(payload)
+        data = result.get("data") or {}
+        return IssuedDocument(
+            document_id=data.get("id"),
+            link=result.get("link"),
+            permanent_url=result.get("permanentUrl"),
+        )
+
+    def credit(self, order, document_id, identifier_id):
+        result = self._client().create_credit_note(
+            document_id, build_credit_payload(order, identifier_id)
+        )
         data = result.get("data") or {}
         return IssuedDocument(
             document_id=data.get("id"),

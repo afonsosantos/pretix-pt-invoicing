@@ -55,6 +55,9 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   lives on the model because it *is* the model's key; it's a pretix-side value, not provider-specific,
   and providers receive it as an argument rather than deriving it.
 - `pretix_ptinvoicing/signals.py` — `order_paid` receiver enqueues `issue_invoice` on Celery;
+  `ptinvoicing_refund_done`, on Django's own `post_save` for `OrderRefund` (not an
+  `EventPluginSignal` — pretix has none for this), enqueues `issue_credit_note` once refunds have
+  brought an order back to fully refunded — see "Credit notes (refunds)" below for the full story.
   `nav_event`/`nav_event_settings` receivers add the Control-panel sidebar entries (via the shared
   `_nav_entry` helper), gated on `can_view_orders` / `can_change_event_settings` respectively.
   Both are labelled **"Invoicing (PT)"**, not "Invoicing": pretix core already has its own
@@ -86,31 +89,42 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   other exception (network/infra) marks `error` too but also `raise self.retry(exc=e)`, since those are
   expected to be transient. That split is the contract every provider has to respect — see
   `providers/base.py`.
-- `pretix_ptinvoicing/forms.py` — `ProviderSelectForm(SettingsForm)`: the
-  provider-agnostic settings. `ptinvoicing_provider` (a `ChoiceField` over
-  `provider_choices()` plus a blank "none" option), `ptinvoicing_email_invoice` and
-  `ptinvoicing_show_in_order`. Rendered **without** a form prefix (field name = storage
-  key), unlike the provider forms below, and the settings template renders the whole form
-  rather than named fields, so a new setting here needs no template edit.
-- `pretix_ptinvoicing/mail.py` — `send_invoice_email(order, provider, invoice)`: downloads
-  the PDF, parks it in a `CachedFile` and hands it to pretix's `mail()` as
-  `attach_cached_files`. Lives in the core, not in a provider, so every provider gets it.
-  **Every failure is logged and swallowed**: by the time this runs the document is already
-  issued at the provider, and a mail problem must not flip a successful issuance to `error`
-  or trigger the task's retry (which would re-enter issuance for an order that already has
-  a document). **Named `mail.py`, never `email.py`**: a module called `email.py` in this package
+- `pretix_ptinvoicing/forms.py` — two `SettingsForm`s, both rendered **without** a form
+  prefix (field name = storage key), unlike the provider forms below, and both rendered
+  whole rather than as named fields, so a new setting on either needs no template edit:
+  - `ProviderSelectForm`: `ptinvoicing_provider` (a `ChoiceField` over `provider_choices()`
+    plus a blank "none" option), `ptinvoicing_nif_custom_field`, `ptinvoicing_show_in_order`.
+  - `EmailSettingsForm`: `ptinvoicing_email_invoice` and `ptinvoicing_email_credit_note` —
+    split into their own form (and its own fieldset in the template, legend "E-mail") so the
+    two documents' e-mails can be turned on independently; both off by default. A separate
+    form because `SettingsView` validates and saves it alongside `ProviderSelectForm` on
+    every POST — unlike the provider forms, it's provider-agnostic so there's no "only the
+    selected one" binding rule to apply to it.
+- `pretix_ptinvoicing/mail.py` — `send_invoice_email(order, provider, invoice)` and
+  `send_credit_note_email(order, provider, credit_note)`, both thin wrappers around
+  `_send_document_email(order, provider, invoice, subject, text, filename)`: downloads the
+  PDF, parks it in a `CachedFile` and hands it to pretix's `mail()` as `attach_cached_files`.
+  Lives in the core, not in a provider, so every provider gets it. **Every failure is logged
+  and swallowed**: by the time this runs the document is already issued at the provider, and
+  a mail problem must not flip a successful issuance to `error` or trigger the task's retry
+  (which would re-enter issuance for an order that already has a document). The credit note's
+  filename gets a `-credit` suffix (`ABCDE-credit.pdf`) so it doesn't collide with the
+  invoice's `ABCDE.pdf` in the buyer's downloads if both were ever saved from the same order.
+  **Named `mail.py`, never `email.py`**: a module called `email.py` in this package
   shadows the stdlib `email` package for anything run with the package directory on `sys.path`,
   which is exactly what the `Makefile`'s `translate` target does (`cd pretix_ptinvoicing && python
   -c ...`). It broke `make translate` with `ModuleNotFoundError: No module named 'email.message'`.
 - `pretix_ptinvoicing/views.py`:
   - `SettingsView` (`EventSettingsViewMixin` + `EventPermissionRequiredMixin`,
     `permission = "can_change_event_settings"`) — plain `View`, not a generic `FormView`. Renders
-    `ProviderSelectForm` plus *every* registered provider's `settings_form_class`, each with
-    `prefix=<provider identifier>`, and lets `settings.js` show only the selected one's fieldset. On
-    POST it binds **only the selected provider's form** to the POST data and leaves the others unbound:
-    otherwise a provider the admin isn't editing would raise validation errors for its own required
-    fields (e.g. Fact.pt's required token) and block every save. Consequence: a save only ever writes
-    the selected provider's settings; the others keep whatever was stored.
+    `ProviderSelectForm`, `EmailSettingsForm`, plus *every* registered provider's
+    `settings_form_class`, each with `prefix=<provider identifier>`, and lets `settings.js` show
+    only the selected provider's fieldset (the e-mail fieldset is always visible — it isn't
+    per-provider). On POST, `select_form` and `email_form` are both always bound and validated, but
+    **only the selected provider's form** is: otherwise a provider the admin isn't editing would
+    raise validation errors for its own required fields (e.g. Fact.pt's required token) and block
+    every save. Consequence: a save always writes both settings forms, but only the selected
+    provider's; other providers keep whatever was stored.
   - `IndexView` (`ListView`, `permission = "can_view_orders"`) — one row per `IssuedInvoice` for the
     event, filterable by `status` via `?status=`. The provider column renders
     `IssuedInvoice.provider_label`, which falls back to the raw stored identifier if that provider has
@@ -188,12 +202,18 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   retries a network failure when it does — otherwise a call that timed out after the document was
   created would be re-sent and issue a second official invoice.
 
-`providers/__init__.py` is the registry: `PROVIDERS = {p.identifier: p for p in (FactptProvider,)}`,
-plus `get_provider(event)` (reads `event.settings["ptinvoicing_provider"]`) and `provider_choices()`.
-Adding a provider is one package plus one entry in that tuple — deliberately no entry points and no
-autodiscovery for something that gains a new member once a year. The base classes live in `base.py`
-rather than in `__init__.py` so provider modules can import them without an import cycle through the
-registry.
+`providers/__init__.py` is the registry: `PROVIDERS`, built by `_discover_providers()`, plus
+`get_provider(event)` (reads `event.settings["ptinvoicing_provider"]`) and `provider_choices()`.
+Autodiscovered, not a hand-maintained tuple: `_discover_providers()` walks the package's immediate
+subpackages with `pkgutil.iter_modules(__path__)` (`base.py` is a plain module, not a package, so
+`is_pkg` already excludes it without a name check), imports each, and collects every
+`InvoiceProvider` subclass it finds by `inspect.getmembers`. Adding a provider is then just writing
+it under `providers/<name>/` — nothing to register here by hand. `pkgutil.iter_modules` yields
+subpackages in sorted (alphabetical) order, which is what keeps `PROVIDERS`' iteration order — used
+to lay out the settings page's provider fieldsets — deterministic across runs; still no setuptools
+entry points, this is pure filesystem discovery within the package. The base classes live in
+`base.py` rather than in `__init__.py` so provider modules can import them without an import cycle
+through the registry.
 
 Settings keys are namespaced per provider *by hand* (`factpt_token`, not `token`): pretix keeps all
 event settings in one flat hierarkey namespace shared with core and every other plugin.
@@ -305,21 +325,26 @@ event settings in one flat hierarkey namespace shared with core and every other 
     from the caller (the core builds it) and sends it as `document.identifierId`. Fact.pt rejects a
     second document with the same `identifierId`, which is the actual duplicate-issuance guard.
 
-### E-mailing the document
+### E-mailing the documents
 
-pretix's own order e-mails will never carry this invoice: the "attach invoices" machinery attaches
-`order.invoices`, which are pretix's own records. So the plugin sends its own mail, from `tasks.py`
-right after a successful issuance, when `ptinvoicing_email_invoice` is on. Off by default — an
-organizer may not want a second e-mail, and enabling it after the fact is one checkbox. Issuing
-manually from the Control panel sends it too, which is the only way an already-paid order gets the
-document by mail at all.
+pretix's own order e-mails will never carry either document: the "attach invoices" machinery
+attaches `order.invoices`, which are pretix's own records. So the plugin sends its own mail, from
+`tasks.py` right after a successful issuance — `send_invoice_email` gated on
+`ptinvoicing_email_invoice`, `send_credit_note_email` gated on `ptinvoicing_email_credit_note`,
+independently. Both off by default — an organizer may not want either extra e-mail, and turning one
+on after the fact is one checkbox in the settings page's "E-mail" section. Issuing manually from the
+Control panel sends the mail too (for both invoice and credit note), which is the only way an
+already-paid order — or an order refunded before the plugin was configured — gets a document by mail
+at all.
 
 ### Why async (Celery)
 
-`signals.py`'s `order_paid` receiver only calls `.apply_async(...)` — all HTTP traffic to the provider
-happens inside the Celery worker, never in the request/response cycle that confirms the payment. Same
-principle as `pretix-eupago`'s payment confirmation flow: a slow or down provider must never delay the
-buyer-facing checkout response.
+`signals.py`'s `order_paid` and `ptinvoicing_refund_done` receivers only ever call `.apply_async(...)`
+— all HTTP traffic to the provider happens inside the Celery worker, never in the request/response
+cycle that confirms the payment or completes the refund. Same principle as `pretix-eupago`'s payment
+confirmation flow: a slow or down provider must never delay the buyer-facing checkout response, and
+here it must equally never delay whatever admin action (or payment-provider webhook) just completed
+the refund.
 
 ### Idempotency, two layers
 
@@ -333,6 +358,86 @@ buyer-facing checkout response.
    `deduplicates_issuance = False`, and `tasks.py` then refuses to auto-retry, because a retry after a
    timeout could issue a second official invoice. Layer 1 alone does not protect against that: the row
    is already `pending`, and the failed attempt cannot tell whether the document was created.
+
+### Credit notes (refunds)
+
+A refund is represented as a credit note, issued through the *same* `IssuedInvoice` model and
+provider-agnostic task machinery as the original invoice, not a parallel concept:
+
+- `IssuedInvoice` gained `kind` (`invoice`/`credit_note`, default `invoice`) and a self-FK
+  `credits`, set only on a credit-note row, pointing at the invoice row it reverses
+  (`invoice.credit_notes` is the reverse accessor). No new model — a credit note is another
+  document a provider issues, referencing the original.
+  `IssuedInvoice.build_credit_identifier_id(event, order)` is `build_identifier_id(...)` plus a
+  `"-credit"` suffix (also truncated to 50): a distinct idempotency key from the invoice's own, so
+  both rows coexist under `unique_together(provider, identifier_id)` and a retry reuses the
+  credit note's row the same way a retried invoice does.
+- `InvoiceProvider.credit(order, document_id, identifier_id)` is the fourth provider method,
+  alongside `issue`/`download`/`lookups`. Every provider implemented so far only allows crediting a
+  document's **full** value — Fact.pt's docs are explicit ("só é possível a emissão de uma Nota de
+  Crédito por documento e de valor igual ao total do documento a creditar"), so there is no
+  partial-refund shape anywhere in this contract. A partial refund is not representable as a credit
+  note under either provider; that's a real gap, not an oversight — see rough edge #10.
+- `tasks.py`'s `issue_credit_note` mirrors `issue_invoice`'s whole state machine (pending → success/
+  error, `ProviderError` terminal, other exceptions retried only when
+  `provider.deduplicates_issuance`) against a second `IssuedInvoice` row instead of a second model.
+  It looks up the order's successful invoice row itself (`kind=KIND_INVOICE, status=STATUS_SUCCESS`)
+  rather than taking a document id as an argument, so the Control panel only ever has to pass an
+  order code — same shape as `issue_invoice`.
+- **Auto-fired on a full refund, via a raw Django model signal, not an `EventPluginSignal`.**
+  `order_paid` (used for the original invoice) has no counterpart for refunds — no pretix signal
+  fires for "this refund/cancellation is worth a full credit note": `order_canceled` fires on
+  cancellation regardless of whether money actually moved, and `OrderRefund` going `done` has no
+  plugin signal at all (see `pretix.base.models.orders.OrderRefund.done()`). `signals.py`'s
+  `ptinvoicing_refund_done` instead listens to Django's own `post_save` on `OrderRefund` — the same
+  mechanism pretix's bundled `sendmail` plugin uses for its `SubEvent` hook — checking
+  `instance.state == REFUND_STATE_DONE`. Unlike an `EventPluginSignal`, a raw model signal fires for
+  *every* event regardless of whether this plugin is enabled there, so the receiver checks
+  `"pretix_ptinvoicing" in order.event.get_plugins()` itself before doing anything.
+  It only enqueues `issue_credit_note` once `order.payment_refund_sum` (pretix's own "payments
+  confirmed minus refunds done/in transit/created" property) reaches zero — i.e. once refunds have
+  actually brought the order back to fully refunded, whether that took one refund or several partial
+  ones. A partial refund that doesn't (yet) zero it out is left alone: crediting more than was
+  actually refunded, just because *a* refund completed, would be wrong, and no provider here can
+  credit less than a document's full value anyway (rough edge #10).
+- Control panel: `order_info.html`'s per-order panel is a `table.table-condensed` — one row per
+  document (invoice, then credit note if any), each with its own inline `btn-xs` actions —
+  deliberately matching the shape of pretix's own "Payments" panel elsewhere on the order page
+  (`table-responsive` > `table.table-condensed`, one row per item, actions inline per row, an
+  error/detail line as a `colspan` sub-row underneath) rather than the earlier one-`<dl>`-per-
+  document layout, which stopped reading well once a credit note could sit alongside the invoice.
+  The credit-note row's "Issue credit note" / "Retry credit note" button — for a *partial* refund,
+  or for crediting an order the admin has another reason to credit, regardless of pretix's own
+  refund records — is enabled once the invoice is `success`, regardless of `is_paid`; crediting is
+  expected to happen *after* the order stops being paid. `IssueCreditNoteView` (`.../<code>/credit/`)
+  mirrors `IssueView`, sharing its `redirect_url`; it's also what `ptinvoicing_refund_done` ends up
+  driving indirectly, via `issue_credit_note` — same task, whether triggered by the auto-refund hook
+  or by hand.
+  `IndexView`'s listing grew a "Kind" column since invoice and credit-note rows for the same order
+  now share the table; its "Retry" link there branches between the `issue` and `credit` URLs by
+  `invoice.kind`.
+  Each row's action `<form>`s carry `style="display: inline-block"` so a form-based action (retry,
+  issue) sits beside an `<a>`-based one (download) in the same cell instead of the form dropping to
+  its own line: a `<form>` is block-level by default, and Bootstrap's `.form-inline` only changes
+  layout *inside* the form, not the form element's own display type.
+  Both `control_order_info` and `presale_order_info_top` in `signals.py` now filter their
+  `IssuedInvoice` lookups by `kind=KIND_INVOICE` — without it, `.first()` (ordered `-created`) could
+  return a *credit note* row as "the" invoice once one exists, since both kinds live in one table.
+- Fact.pt (`providers/factpt/`): `POST /documents/{id}/credit`
+  (`FactptClient.create_credit_note`) takes no client or items block — `build_credit_payload(order,
+  identifier_id)` sends only `date`/`reference`/`identifierId`. Not yet exercised against a real
+  Fact.pt account (issuance itself hasn't been either — see "Status" above); the shape is read
+  straight off Fact.pt's own API docs page for "Criar Nota de Crédito".
+- Moloni (`providers/moloni/`): has no equivalent one-call endpoint. `MoloniProvider.credit()` first
+  fetches the original document (`invoiceReceipts/getOne`) to get its `customer_id` and line items,
+  then calls `creditNotes/insert` with an `associated_documents: [{associated_id, value}]` entry and
+  a `products` array mirroring the original's. Confirmed against Moloni's public API docs
+  (`moloni.pt/dev/documents/credit-notes/insert/`), but one shape is a known gap: `products[].
+  related_id` is documented as mapping to each original line's `document_product_id`, and
+  `invoiceReceipts/getOne`'s own documented response has no such field — `payload.build_credit_note`
+  uses `product_id` instead (the closest documented value) with a `ponytail:` comment flagging it.
+  Confirm against a real account before trusting a Moloni credit note in production, same bar as the
+  rest of this provider.
 
 ### Displaying amounts
 
@@ -398,9 +503,10 @@ Same conventions as `pretix-eupago`:
 - `tests/conftest.py` provides `organizer`/`event`/`order`/`item`/`position` fixtures; all model
   creation happens inside `with scopes_disabled():` (`django_scopes`) since fixtures run without an
   active scope.
-- Provider-agnostic tests live in `tests/test_models.py`, `tests/test_tasks.py`, `tests/test_views.py`;
-  Fact.pt-specific ones in `tests/test_factpt_client.py` / `tests/test_factpt_payload.py`. A second
-  provider should follow the same split.
+- Provider-agnostic tests live in `tests/test_models.py`, `tests/test_tasks.py`, `tests/test_views.py`,
+  `tests/test_signals.py` (the `order_paid` and `ptinvoicing_refund_done` receivers); Fact.pt-specific
+  ones in `tests/test_factpt_client.py` / `tests/test_factpt_payload.py`. A second provider should
+  follow the same split.
 - Tests that expect issuance to happen must set **both** `event.settings.ptinvoicing_provider =
   "factpt"` and the provider's own credentials — with no provider selected the task now returns early
   and creates nothing.
@@ -547,6 +653,18 @@ These were checked against a real Fact.pt **sandbox** account, not inferred from
 9. **Switching provider mid-event doesn't re-issue anything.** Past `IssuedInvoice` rows keep their
    original `provider`, and `DownloadView` 404s for rows whose provider is no longer the event's
    current one — the old provider's credentials aren't kept around to fetch the PDF.
+10. **Partial refunds have no credit-note representation.** Both providers only support crediting a
+    document's full value (Fact.pt says so explicitly; Moloni's `creditNotes/insert` reconciles
+    against `associated_documents`, which this plugin always sends as the original's full
+    `gross_value`). `ptinvoicing_refund_done` (see "Credit notes" above) only auto-issues once
+    `order.payment_refund_sum` reaches zero, i.e. once refunds have accumulated to the full amount —
+    a single partial refund leaves an order with no provider-side credit-note document, silently, by
+    design, until either a later refund completes it or the admin issues one by hand from the
+    Control panel. The admin has to judge whether a full credit note (crediting more than was
+    actually refunded by that point) or no document at all is the lesser problem, same spirit as
+    rough edge #1's tax-mismatch stance: fail visibly rather than issue something wrong silently. A
+    future fix would need pretix-tax-rule-style partial support from the providers themselves, which
+    Fact.pt's API v1.0.0 doesn't offer.
 
 ## Commands
 

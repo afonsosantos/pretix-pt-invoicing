@@ -125,6 +125,28 @@ def test_search_clients_returns_data():
 
 
 @responses.activate
+def test_create_credit_note_posts_to_the_documents_credit_endpoint():
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {
+                "data": {"id": "999"},
+                "link": "https://fact.pt/doc/999",
+                "permanentUrl": "https://fact.pt/permanent/999",
+            },
+        },
+        status=200,
+    )
+
+    client = FactptClient(token="abc")
+    result = client.create_credit_note("12345", {"document": {"identifierId": "x"}})
+
+    assert result["data"]["id"] == "999"
+
+
+@responses.activate
 def test_download_document_returns_bytes():
     responses.add(
         responses.GET,

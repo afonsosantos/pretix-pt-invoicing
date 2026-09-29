@@ -23,10 +23,10 @@ class MoloniClient:
     """
     Thin wrapper over Moloni's REST API (https://api.moloni.pt/v1).
 
-    Unlike Fact.pt's static token, Moloni is OAuth: a 1-hour access token obtained with the
-    password grant and renewed with a 14-day refresh token, passed as a **GET parameter**
-    on every call. `on_token` is called whenever a new pair is obtained so the caller can
-    persist it — otherwise every issuance would burn a fresh password grant.
+    OAuth: a 1-hour access token obtained with the password grant and renewed with a 14-day
+    refresh token, passed as a **GET parameter** on every call. `on_token` is called
+    whenever a new pair is obtained so the caller can persist it — otherwise every issuance
+    would burn a fresh password grant.
     """
 
     def __init__(

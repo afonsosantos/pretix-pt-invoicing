@@ -10,7 +10,7 @@ from pretix.base.models import InvoiceAddress, Order
 from pretix_ptinvoicing.models import IssuedInvoice
 from pretix_ptinvoicing.providers.moloni import MoloniProvider
 from pretix_ptinvoicing.providers.moloni.client import MoloniAPIError, MoloniClient
-from pretix_ptinvoicing.tasks import issue_invoice
+from pretix_ptinvoicing.tasks import issue_credit_note, issue_invoice
 
 GRANT = "https://api.moloni.pt/v1/grant/"
 API = "https://api.moloni.pt/v1/{}/"
@@ -202,6 +202,63 @@ def test_client_reports_bad_credentials_as_a_provider_error():
     with pytest.raises(MoloniAPIError) as excinfo:
         client.token()
     assert "Bad credentials" in str(excinfo.value)
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_credit_note_fetches_the_original_then_inserts_a_credit_note(
+    moloni_event, order, position
+):
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="moloni",
+            identifier_id="pretix-dummy-FOOBAR",
+            kind=IssuedInvoice.KIND_INVOICE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="900",
+        )
+
+    mock_grant()
+    responses.add(
+        responses.POST,
+        API.format("invoiceReceipts/getOne"),
+        json={
+            "customer_id": 42,
+            "gross_value": 23.0,
+            "your_reference": "FOOBAR",
+            "products": [
+                {
+                    "product_id": 5,
+                    "name": "Ticket",
+                    "qty": 1,
+                    "price": 23.0,
+                    "discount": 0,
+                    "taxes": [{"tax_id": 11}],
+                }
+            ],
+        },
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        API.format("creditNotes/insert"),
+        json={"document_id": 950},
+        status=200,
+    )
+
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": moloni_event.pk})
+
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent["customer_id"] == 42
+    assert sent["associated_documents"] == [{"associated_id": 900, "value": 23.0}]
+    assert sent["products"][0]["related_id"] == 5
+    assert sent["products"][0]["taxes"] == [{"tax_id": 11, "order": 0, "cumulative": 0}]
+
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(kind=IssuedInvoice.KIND_CREDIT_NOTE)
+    assert credit_note.status == IssuedInvoice.STATUS_SUCCESS
+    assert credit_note.document_id == "950"
 
 
 @pytest.mark.django_db

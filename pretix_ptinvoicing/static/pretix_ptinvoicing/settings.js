@@ -4,17 +4,17 @@
 //     using whatever is currently typed in (not necessarily saved yet).
 // Must stay a real static file: the Control panel's nonce-based CSP blocks inline scripts.
 document.addEventListener("DOMContentLoaded", function () {
-    var select = document.getElementById("id_ptinvoicing_provider");
-    var fieldsets = Array.prototype.slice.call(
+    const select = document.getElementById("id_ptinvoicing_provider");
+    const fieldsets = Array.prototype.slice.call(
         document.querySelectorAll(".ptinvoicing-provider")
     );
     if (!select || !fieldsets.length) return;
 
-    var lookupsUrl = window.location.pathname.replace(/\/?$/, "/") + "lookups/";
-    var csrfToken = document.querySelector("input[name=csrfmiddlewaretoken]").value;
+    const lookupsUrl = window.location.pathname.replace(/\/?$/, "/") + "lookups/";
+    const csrfToken = document.querySelector("input[name=csrfmiddlewaretoken]").value;
 
     // Fields the lookup itself filled: changing one must not trigger another lookup.
-    var lookupFields = new Set();
+    const lookupFields = new Set();
 
     function activeFieldset() {
         return fieldsets.filter(function (fs) {
@@ -23,14 +23,14 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function setStatus(fieldset, text, isError) {
-        var node = fieldset.querySelector(".ptinvoicing-lookup-status");
+        const node = fieldset.querySelector(".ptinvoicing-lookup-status");
         node.textContent = text;
         node.classList.toggle("text-danger", !!isError);
     }
 
     function toSelect(input) {
         if (input.tagName === "SELECT") return input;
-        var replacement = document.createElement("select");
+        const replacement = document.createElement("select");
         replacement.name = input.name;
         replacement.id = input.id;
         replacement.className = input.className;
@@ -41,13 +41,13 @@ document.addEventListener("DOMContentLoaded", function () {
     function populate(input, items) {
         // Keep the already-saved value selectable even if it's inactive or missing from
         // this fetch, so re-rendering the dropdown never silently changes a saved setting.
-        var currentValue = input.value;
-        var field = toSelect(input);
+        const currentValue = input.value;
+        const field = toSelect(input);
         field.innerHTML = "";
 
         var matched = false;
         items.forEach(function (item) {
-            var option = document.createElement("option");
+            const option = document.createElement("option");
             option.value = item.id;
             option.textContent = item.label;
             if (currentValue && String(item.id) === String(currentValue)) {
@@ -58,7 +58,7 @@ document.addEventListener("DOMContentLoaded", function () {
         });
 
         if (currentValue && !matched) {
-            var option = document.createElement("option");
+            const option = document.createElement("option");
             option.value = currentValue;
             option.textContent = currentValue + " (current)";
             option.selected = true;
@@ -67,15 +67,15 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function loadOptions() {
-        var fieldset = activeFieldset();
+        const fieldset = activeFieldset();
         if (!fieldset) return;
 
-        var prefix = fieldset.dataset.provider + "-";
-        var body = new URLSearchParams();
+        const prefix = fieldset.dataset.provider + "-";
+        const body = new URLSearchParams();
         body.set("provider", fieldset.dataset.provider);
         fieldset.querySelectorAll("input, select").forEach(function (input) {
             if (!input.name || input.name.indexOf(prefix) !== 0) return;
-            var name = input.name.slice(prefix.length);
+            const name = input.name.slice(prefix.length);
             if (input.type === "checkbox") {
                 body.set(name, input.checked ? "true" : "false");
             } else if (input.value.trim()) {
@@ -108,7 +108,7 @@ document.addEventListener("DOMContentLoaded", function () {
                     return;
                 }
                 Object.keys(result.data.fields || {}).forEach(function (name) {
-                    var input = document.getElementById("id_" + prefix + name);
+                    const input = document.getElementById("id_" + prefix + name);
                     if (!input) return;
                     populate(input, result.data.fields[name]);
                     lookupFields.add(input.id);
@@ -121,8 +121,12 @@ document.addEventListener("DOMContentLoaded", function () {
     }
 
     function showActive() {
+        // disabled, not just hidden: a hidden required field still fails native HTML5
+        // validation ("not focusable"). <fieldset disabled> excludes it from both.
         fieldsets.forEach(function (fs) {
-            fs.hidden = fs.dataset.provider !== select.value;
+            const inactive = fs.dataset.provider !== select.value;
+            fs.hidden = inactive;
+            fs.disabled = inactive;
         });
         loadOptions();
     }

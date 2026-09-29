@@ -1,6 +1,6 @@
 from ...orderdata import FINAL_CONSUMER_NIF, bare_tin, client_name, one_line
 
-# Moloni's own field limits, not Fact.pt's — a provider never reaches into a sibling.
+# Moloni's own field limits — a provider never reaches into a sibling.
 MAX_NAME = 100
 MAX_ADDRESS = 100
 MAX_CITY = 50
@@ -13,9 +13,9 @@ def build_customer(order, custom_field_is_nif=False):
     """
     The customer to create in Moloni.
 
-    Unlike Fact.pt, Moloni takes no inline client block on the document — the customer is a
-    separate object and the document carries only its `customer_id`. This is what
-    `customers/insert` gets when no existing customer matches.
+    Moloni takes no inline client block on the document — the customer is a separate object
+    and the document carries only its `customer_id`. This is what `customers/insert` gets
+    when no existing customer matches.
     """
     ia = getattr(order, "invoice_address", None)
     tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
@@ -42,9 +42,9 @@ def build_products(order, event_settings):
             "name": str(position.item.name)[:100],
             "summary": f"pretix-{position.pk}",
             "qty": 1,
-            # ponytail: sent net, mirroring Fact.pt, because Moloni applies `taxes` on top.
-            # Moloni's docs don't state net vs gross — settle it with one document against a
-            # real account before trusting this in production, the way Fact.pt's was settled.
+            # ponytail: sent net, because Moloni applies `taxes` on top of `price`. Moloni's
+            # docs don't state net vs gross — settle it with one document against a real
+            # account before trusting this in production.
             "price": float(position.price - position.tax_value),
             "order": index,
             "discount": 0,
@@ -84,4 +84,58 @@ def build_document(order, event_settings, customer_id, identifier_id, date):
         "status": 1,  # 1 = closed/issued, as opposed to a draft
         "products": build_products(order, event_settings),
         "payments": build_payments(order, event_settings, date),
+    }
+
+
+def build_credit_note(
+    original_document_id, original_document, event_settings, identifier_id, date
+):
+    """
+    A full credit note for `original_document` (the invoiceReceipts/getOne response for
+    the invoice being reversed) — Moloni's creditNotes/insert requires the *product* lines
+    plus an associated_documents entry linking back to it.
+
+    Unverified against a real account, like the rest of this provider. In particular:
+    creditNotes/insert documents `products[].related_id` as mapping to a
+    "document_product_id" that invoiceReceipts/getOne's own docs don't list as a field of
+    each product — using `product_id` here is the closest documented match, not a
+    confirmed one.
+    """
+    products = []
+    for index, item in enumerate(original_document.get("products") or []):
+        # ponytail: related_id may be wrong (see docstring above); confirm against a real
+        # account before trusting a credit note here.
+        product = {
+            "related_id": item.get("product_id"),
+            "name": item.get("name"),
+            "qty": item.get("qty"),
+            "price": item.get("price"),
+            "order": index,
+            "discount": item.get("discount") or 0,
+        }
+        taxes = item.get("taxes") or []
+        if taxes:
+            product["taxes"] = [
+                {"tax_id": t.get("tax_id"), "order": 0, "cumulative": 0} for t in taxes
+            ]
+        exemption_reason = item.get("exemption_reason")
+        if exemption_reason:
+            product["exemption_reason"] = exemption_reason
+        products.append(product)
+
+    return {
+        "company_id": event_settings.get("moloni_company_id", as_type=int),
+        "customer_id": original_document.get("customer_id"),
+        "document_set_id": event_settings.get("moloni_document_set_id", as_type=int),
+        "date": date,
+        "our_reference": identifier_id,
+        "your_reference": original_document.get("your_reference"),
+        "status": 1,
+        "associated_documents": [
+            {
+                "associated_id": original_document_id,
+                "value": original_document.get("gross_value"),
+            }
+        ],
+        "products": products,
     }

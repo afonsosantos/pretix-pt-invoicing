@@ -13,6 +13,11 @@ urlpatterns = [
         name="settings_lookups",
     ),
     path(_prefix + "<str:code>/issue/", views.IssueView.as_view(), name="issue"),
+    path(
+        _prefix + "<str:code>/credit/",
+        views.IssueCreditNoteView.as_view(),
+        name="credit",
+    ),
     path(_prefix + "<int:pk>/download/", views.DownloadView.as_view(), name="download"),
 ]
 

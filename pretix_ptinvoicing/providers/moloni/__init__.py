@@ -7,7 +7,7 @@ from pretix.base.forms import SettingsForm
 from ...orderdata import bare_tin
 from ..base import InvoiceProvider, IssuedDocument, ProviderError
 from .client import MoloniAPIError, MoloniClient
-from .payload import build_customer, build_document
+from .payload import build_credit_note, build_customer, build_document
 
 __all__ = ["MoloniAPIError", "MoloniClient", "MoloniProvider", "MoloniSettingsForm"]
 
@@ -101,8 +101,8 @@ class MoloniProvider(InvoiceProvider):
         )
 
         if tin:
-            # Only reuse an unambiguous match, same rule as the Fact.pt provider: guessing
-            # which duplicate an official invoice belongs to isn't something to do quietly.
+            # Only reuse an unambiguous match: guessing which duplicate an official
+            # invoice belongs to isn't something to do quietly.
             try:
                 found = client.call(
                     "customers/getByVat", {"company_id": company_id, "vat": tin}
@@ -144,6 +144,34 @@ class MoloniProvider(InvoiceProvider):
             permanent_url=(result or {}).get("public_link"),
         )
 
+    def credit(self, order, document_id, identifier_id):
+        client = self._client()
+        company_id = self.settings.get("moloni_company_id", as_type=int)
+        date = timezone.now().date().isoformat()
+
+        original = client.call(
+            "invoiceReceipts/getOne",
+            {"company_id": company_id, "document_id": int(document_id)},
+        )
+        if not original:
+            raise MoloniAPIError(
+                _("Moloni could not find the original document %(id)s to credit.")
+                % {"id": document_id}
+            )
+
+        payload = build_credit_note(
+            int(document_id), original, self.settings, identifier_id, date
+        )
+        result = client.call("creditNotes/insert", payload)
+
+        credit_id = (result or {}).get("document_id")
+        if not credit_id:
+            raise MoloniAPIError(
+                _("Moloni did not return a credit note id."),
+                detail=result if isinstance(result, dict) else None,
+            )
+        return IssuedDocument(document_id=str(credit_id), link=None, permanent_url=None)
+
     def download(self, document_id):
         client = self._client()
         link = client.call(
@@ -169,8 +197,8 @@ class MoloniProvider(InvoiceProvider):
 
     def lookups(self, data):
         """
-        Four dropdowns at once, against credentials the admin hasn't saved yet — the same
-        {field: [{id, label}]} contract Fact.pt uses for its single one.
+        Four dropdowns at once, against credentials the admin hasn't saved yet, using the
+        same {field: [{id, label}]} contract as any other provider's lookups().
         """
         missing = [
             k

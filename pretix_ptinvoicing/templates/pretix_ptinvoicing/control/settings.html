@@ -13,11 +13,13 @@
     <form action="" method="post" class="form-horizontal" enctype="multipart/form-data">
         {% csrf_token %}
         {% bootstrap_form_errors select_form %}
-        {% comment %}
-            Whole form, not one named field: a new provider-agnostic setting should show
-            up here without anyone having to remember to edit this template.
-        {% endcomment %}
         {% bootstrap_form select_form layout="horizontal" %}
+
+        <fieldset>
+            <legend>{% trans "E-mail" %}</legend>
+            {% bootstrap_form_errors email_form %}
+            {% bootstrap_form email_form layout="horizontal" %}
+        </fieldset>
 
         {% for block in provider_blocks %}
             <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}">

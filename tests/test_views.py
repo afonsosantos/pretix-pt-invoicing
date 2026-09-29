@@ -14,6 +14,7 @@ LOOKUPS_URL = "/control/event/{}/{}/invoicing/settings/lookups/"
 INDEX_URL = "/control/event/{}/{}/invoicing/"
 DOWNLOAD_URL = "/control/event/{}/{}/invoicing/{}/download/"
 ISSUE_URL = "/control/event/{}/{}/invoicing/{}/issue/"
+CREDIT_URL = "/control/event/{}/{}/invoicing/{}/credit/"
 
 
 @pytest.fixture
@@ -39,6 +40,7 @@ def test_get_settings_page(logged_in_client, event):
     assert b"API token" in response.content
     # The whole provider-agnostic form renders, not just the provider selector.
     assert b"ptinvoicing_email_invoice" in response.content
+    assert b"ptinvoicing_email_credit_note" in response.content
     assert b"ptinvoicing_show_in_order" in response.content
 
 
@@ -48,6 +50,7 @@ def test_post_settings_page_saves(logged_in_client, event):
         SETTINGS_URL.format(event.organizer.slug, event.slug),
         data={
             "ptinvoicing_provider": "factpt",
+            "ptinvoicing_email_invoice": "on",
             "factpt-factpt_token": "posted-token",
             "factpt-factpt_default_tax_id": "5",
             "factpt-factpt_default_unit_id": "1",
@@ -61,6 +64,12 @@ def test_post_settings_page_saves(logged_in_client, event):
         assert event.settings.get("ptinvoicing_provider") == "factpt"
         assert event.settings.get("factpt_token") == "posted-token"
         assert event.settings.get("factpt_default_tax_id", as_type=int) == 5
+        # The e-mail settings are a separate form from the provider selector and must be
+        # saved alongside it, not silently dropped.
+        assert event.settings.get("ptinvoicing_email_invoice", as_type=bool) is True
+        assert (
+            event.settings.get("ptinvoicing_email_credit_note", as_type=bool) is False
+        )
 
 
 @pytest.mark.django_db
@@ -310,6 +319,44 @@ def test_issue_view_requires_permission(client, event, paid_order):
     assert response.status_code == 404
 
 
+@pytest.mark.django_db
+@responses.activate
+def test_credit_view_issues_a_credit_note_for_an_invoiced_order(
+    logged_in_client, event, issued_invoice
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "999"}}},
+        status=200,
+    )
+
+    response = logged_in_client.post(
+        CREDIT_URL.format(event.organizer.slug, event.slug, issued_invoice.order.code)
+    )
+
+    assert response.status_code == 302
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(kind=IssuedInvoice.KIND_CREDIT_NOTE)
+    assert credit_note.status == IssuedInvoice.STATUS_SUCCESS
+    assert credit_note.document_id == "999"
+
+
+@pytest.mark.django_db
+def test_credit_view_requires_permission(client, event, issued_invoice):
+    with scopes_disabled():
+        User.objects.create_user("noaccess@example.org", "dummy")
+    client.login(email="noaccess@example.org", password="dummy")
+
+    response = client.post(
+        CREDIT_URL.format(event.organizer.slug, event.slug, issued_invoice.order.code)
+    )
+    assert response.status_code == 404
+
+
 @pytest.fixture
 def plugin_enabled_event(event):
     # order_info is an EventPluginSignal: it only reaches plugins active for the event.
@@ -330,6 +377,9 @@ def test_order_page_panel_offers_a_working_issue_button(
     assert response.status_code == 200
     body = response.content.decode()
     assert "Issue invoice now" in body
+    # {# #} is single-line only; a multi-line one renders as visible text (shipped twice
+    # before — see settings.html's own guard below).
+    assert "{#" not in body
 
     issue_url = ISSUE_URL.format(
         plugin_enabled_event.organizer.slug,
@@ -353,6 +403,36 @@ def test_order_page_panel_offers_a_working_issue_button(
         issue_url, data={"csrfmiddlewaretoken": token.group(1), "next": "/control/"}
     )
     assert posted.status_code == 302
+
+
+@pytest.mark.django_db
+def test_order_page_panel_offers_a_credit_note_button_once_invoiced(
+    logged_in_client, plugin_enabled_event, paid_order
+):
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="12345",
+        )
+
+    response = logged_in_client.get(
+        f"/control/event/{plugin_enabled_event.organizer.slug}/"
+        f"{plugin_enabled_event.slug}/orders/{paid_order.code}/"
+    )
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "Issue credit note" in body
+    assert (
+        CREDIT_URL.format(
+            plugin_enabled_event.organizer.slug,
+            plugin_enabled_event.slug,
+            paid_order.code,
+        )
+        in body
+    )
 
 
 @pytest.mark.django_db

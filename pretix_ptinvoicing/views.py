@@ -11,10 +11,10 @@ from pretix.control.views.event import EventSettingsViewMixin
 from pretix.presale.views import EventViewMixin
 from pretix.presale.views.order import OrderDetailMixin
 
-from .forms import ProviderSelectForm
+from .forms import EmailSettingsForm, ProviderSelectForm
 from .models import IssuedInvoice
 from .providers import PROVIDERS, ProviderError, get_provider
-from .tasks import issue_invoice
+from .tasks import issue_credit_note, issue_invoice
 
 
 class IndexView(EventPermissionRequiredMixin, ListView):
@@ -73,6 +73,24 @@ class IssueView(EventPermissionRequiredMixin, View):
                 "organizer": request.organizer.slug,
             },
         )
+
+
+class IssueCreditNoteView(IssueView):
+    """
+    Enqueue a credit note for one order's already-issued invoice.
+
+    Shares IssueView's redirect handling; only the task differs. Deliberately manual —
+    unlike issue_invoice, nothing triggers this automatically: there's no reliable pretix
+    signal for "this refund is worth a full credit note", so an admin decides each time.
+    """
+
+    def post(self, request, *args, **kwargs):
+        order = get_object_or_404(Order, code=kwargs["code"], event=request.event)
+        issue_credit_note.apply_async(
+            kwargs={"order_pk": order.pk, "event_pk": request.event.pk}
+        )
+        messages.success(request, _("Credit note request sent to the provider."))
+        return redirect(self.redirect_url(request))
 
 
 class DownloadView(EventPermissionRequiredMixin, View):
@@ -157,11 +175,13 @@ class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
         return self.render(
             request,
             ProviderSelectForm(obj=request.event),
+            EmailSettingsForm(obj=request.event),
             self.provider_forms(request),
         )
 
     def post(self, request, *args, **kwargs):
         select_form = ProviderSelectForm(obj=request.event, data=request.POST)
+        email_form = EmailSettingsForm(obj=request.event, data=request.POST)
         selected = request.POST.get("ptinvoicing_provider", "")
         # Only the selected provider's form is bound: the others keep their stored
         # settings untouched and must not raise validation errors for fields the admin
@@ -169,8 +189,13 @@ class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
         provider_forms = self.provider_forms(request, bound=selected)
         active = provider_forms.get(selected)
 
-        if select_form.is_valid() and (active is None or active.is_valid()):
+        if (
+            select_form.is_valid()
+            and email_form.is_valid()
+            and (active is None or active.is_valid())
+        ):
             select_form.save()
+            email_form.save()
             if active:
                 active.save()
             messages.success(request, _("Invoicing settings saved."))
@@ -183,7 +208,7 @@ class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
                     },
                 )
             )
-        return self.render(request, select_form, provider_forms)
+        return self.render(request, select_form, email_form, provider_forms)
 
     def provider_forms(self, request, bound=None):
         return {
@@ -195,12 +220,13 @@ class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
             for identifier, cls in PROVIDERS.items()
         }
 
-    def render(self, request, select_form, provider_forms):
+    def render(self, request, select_form, email_form, provider_forms):
         return render(
             request,
             self.template_name,
             {
                 "select_form": select_form,
+                "email_form": email_form,
                 "provider_blocks": [
                     {
                         "identifier": identifier,

@@ -69,6 +69,9 @@ class FactptClient:
     def create_invoice_receipt(self, payload):
         return self._request("POST", "/documents/invoicereceipt", payload)
 
+    def create_credit_note(self, document_id, payload):
+        return self._request("POST", f"/documents/{document_id}/credit", payload)
+
     def get_document(self, document_id):
         return self._request("GET", f"/documents/{document_id}")
 

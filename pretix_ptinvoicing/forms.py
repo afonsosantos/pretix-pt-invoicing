@@ -14,22 +14,13 @@ class ProviderSelectForm(SettingsForm):
             "Only the selected provider's settings below are saved and used for issuance."
         ),
     )
-    ptinvoicing_email_invoice = forms.BooleanField(
-        label=_("E-mail the invoice to the buyer"),
-        required=False,
-        help_text=_(
-            "Sends the issued document as a PDF attachment once it is issued. pretix's own "
-            "order e-mails don't carry it: the document belongs to the provider, not to "
-            "pretix's invoice records."
-        ),
-    )
     ptinvoicing_nif_custom_field = forms.BooleanField(
         label=_("The custom invoice-address field holds the buyer's tax number"),
         required=False,
         help_text=_(
             "pretix only offers its VAT ID field to business customers, so individuals "
             "have nowhere to enter a tax number. Turn this on after adding a custom "
-            'recipient field labelled e.g. "NIF" under Settings \u2192 Invoicing; it is '
+            'recipient field labelled e.g. "NIF" under Settings → Invoicing; it is '
             "then used as the tax number when the VAT ID field is empty. Portuguese "
             "numbers that fail their check digit are ignored, not sent."
         ),
@@ -39,4 +30,20 @@ class ProviderSelectForm(SettingsForm):
         required=False,
         initial=True,
         help_text=_("Adds a download link next to pretix's own invoice list."),
+    )
+
+
+class EmailSettingsForm(SettingsForm):
+    # pretix's own order e-mails don't carry either document: they attach order.invoices,
+    # pretix's own invoice records, and neither an issued invoice-receipt nor a credit note
+    # belongs to those. Both off by default — an organizer may not want the extra e-mail.
+    ptinvoicing_email_invoice = forms.BooleanField(
+        label=_("E-mail the invoice-receipt to the buyer"),
+        required=False,
+        help_text=_("Sends the issued document as a PDF attachment once it is issued."),
+    )
+    ptinvoicing_email_credit_note = forms.BooleanField(
+        label=_("E-mail the credit note to the buyer"),
+        required=False,
+        help_text=_("Sends the credit note as a PDF attachment once it is issued."),
     )

@@ -16,6 +16,13 @@ class IssuedInvoice(models.Model):
         (STATUS_ERROR, _("Error")),
     ]
 
+    KIND_INVOICE = "invoice"
+    KIND_CREDIT_NOTE = "credit_note"
+    KIND_CHOICES: ClassVar = [
+        (KIND_INVOICE, _("Invoice")),
+        (KIND_CREDIT_NOTE, _("Credit note")),
+    ]
+
     order = models.ForeignKey(
         "pretixbase.Order",
         related_name="ptinvoicing_invoices",
@@ -24,6 +31,18 @@ class IssuedInvoice(models.Model):
     provider = models.CharField(max_length=32)
     status = models.CharField(
         max_length=16, choices=STATUS_CHOICES, default=STATUS_PENDING
+    )
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES, default=KIND_INVOICE)
+    # Set only on a credit-note row: the invoice row it reverses. Every provider so far
+    # (Fact.pt confirmed, Moloni by doc) only allows one credit note per document, so this
+    # is effectively one-to-one, but a plain FK needs no extra constraint to say that — the
+    # task that creates credit notes already refuses to make a second one.
+    credits = models.ForeignKey(
+        "self",
+        related_name="credit_notes",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
     )
 
     # Idempotency key handed to the provider (Fact.pt: identifierId).
@@ -52,6 +71,12 @@ class IssuedInvoice(models.Model):
         # Stable per (event, order) so a retry reuses the same row and the provider's own
         # duplicate check (Fact.pt rejects a repeated identifierId) backs it up.
         return f"pretix-{event.slug}-{order.code}"[:50]
+
+    @staticmethod
+    def build_credit_identifier_id(event, order):
+        # A distinct key from the invoice's own, so both rows can coexist under the same
+        # unique_together(provider, identifier_id) and a retry reuses the credit note's row.
+        return f"{IssuedInvoice.build_identifier_id(event, order)}-credit"[:50]
 
     @property
     def provider_label(self):

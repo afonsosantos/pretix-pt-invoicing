@@ -12,7 +12,7 @@ from pretix.base.models import InvoiceAddress, Order, OrderPosition
 from pretix_ptinvoicing.models import IssuedInvoice
 from pretix_ptinvoicing.providers import PROVIDERS, ProviderError
 from pretix_ptinvoicing.providers.base import InvoiceProvider, IssuedDocument
-from pretix_ptinvoicing.tasks import issue_invoice
+from pretix_ptinvoicing.tasks import issue_credit_note, issue_invoice
 from tests.conftest import mock_factpt_taxes
 
 
@@ -163,6 +163,186 @@ def test_falls_back_to_inline_client_when_search_finds_multiple_matches(
     sent = json.loads(responses.calls[-1].request.body)
     assert sent["client"]["tin"] == "123456789"
     assert "id" not in sent["client"]
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_credit_note_through_factpt_hits_the_documents_credit_endpoint(
+    order, event, position
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {
+                "data": {"id": "999"},
+                "permanentUrl": "https://fact.pt/permanent/999",
+            },
+        },
+        status=200,
+    )
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert (
+        responses.calls[-1].request.url == "https://api.fact.pt/documents/12345/credit"
+    )
+    sent = json.loads(responses.calls[-1].request.body)
+    assert sent["document"]["identifierId"] == "pretix-dummy-FOOBAR-credit"
+
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(kind=IssuedInvoice.KIND_CREDIT_NOTE)
+    assert credit_note.status == IssuedInvoice.STATUS_SUCCESS
+    assert credit_note.document_id == "999"
+    assert credit_note.permanent_url == "https://fact.pt/permanent/999"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_emails_the_credit_note_to_the_buyer_when_enabled(order, event, position):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        event.settings.ptinvoicing_email_credit_note = True
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "999"}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/999/download",
+        body=b"%PDF-1.4 fake",
+        status=200,
+        content_type="application/pdf",
+    )
+
+    django_mail.outbox = []
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert len(django_mail.outbox) == 1
+    sent = django_mail.outbox[0]
+    assert order.email in sent.to
+    assert [a[0] for a in sent.attachments] == [f"{order.code}-credit.pdf"]
+    assert sent.subject == f"Your credit note for order {order.code}"
+    assert f"a credit note for order {order.code}" in sent.body
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_credit_note_email_is_translated_to_the_buyers_locale(order, event, position):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        event.settings.ptinvoicing_email_credit_note = True
+        order.status = Order.STATUS_PAID
+        order.locale = "pt-pt"
+        order.save(update_fields=["status", "locale"])
+
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "999"}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/999/download",
+        body=b"%PDF-1.4 fake",
+        status=200,
+        content_type="application/pdf",
+    )
+
+    django_mail.outbox = []
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert len(django_mail.outbox) == 1
+    sent = django_mail.outbox[0]
+    assert sent.subject == f"A sua nota de crédito da encomenda {order.code}"
+    assert f"segue em anexo a nota de crédito da encomenda {order.code}" in sent.body
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_does_not_email_the_credit_note_by_default(order, event, position):
+    # ptinvoicing_email_invoice being on must not also email the credit note — the two
+    # settings are independent.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        event.settings.ptinvoicing_email_invoice = True
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/12345/download",
+        body=b"%PDF-1.4 fake",
+        status=200,
+        content_type="application/pdf",
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/12345/credit",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "999"}}},
+        status=200,
+    )
+    # No download mock for the credit note's own PDF: fetching it would blow up the test.
+
+    django_mail.outbox = []
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert django_mail.outbox == []
 
 
 @pytest.mark.django_db
@@ -333,6 +513,48 @@ def test_emails_the_invoice_to_the_buyer_when_enabled(order, event, position):
     sent = django_mail.outbox[0]
     assert order.email in sent.to
     assert [a[0] for a in sent.attachments] == [f"{order.code}.pdf"]
+    assert sent.subject == f"Your invoice for order {order.code}"
+    assert f"your invoice for order {order.code}" in sent.body
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_invoice_email_is_translated_to_the_buyers_locale(order, event, position):
+    # subject/text must be passed to mail() still lazy (LazyI18nString), not pre-formatted
+    # with `%`: mail() only translates whatever is still lazy by the time it enters its own
+    # `with language(order.locale)` block. A %-formatted plain str would already be frozen
+    # in whatever language happened to be active in the Celery worker, never order.locale.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        event.settings.ptinvoicing_email_invoice = True
+        order.status = Order.STATUS_PAID
+        order.locale = "pt-pt"
+        order.save(update_fields=["status", "locale"])
+
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/12345/download",
+        body=b"%PDF-1.4 fake",
+        status=200,
+        content_type="application/pdf",
+    )
+
+    django_mail.outbox = []
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert len(django_mail.outbox) == 1
+    sent = django_mail.outbox[0]
+    assert sent.subject == f"A sua fatura da encomenda {order.code}"
+    assert f"segue em anexo a sua fatura da encomenda {order.code}" in sent.body
 
 
 @pytest.mark.django_db
@@ -411,6 +633,7 @@ class _DummyProvider(InvoiceProvider):
     deduplicates_issuance = True
 
     issued: ClassVar = []
+    credited: ClassVar = []
     fail_with = None
 
     @property
@@ -425,6 +648,16 @@ class _DummyProvider(InvoiceProvider):
             document_id="DUMMY-1", link="https://example.org/d/1", permanent_url=None
         )
 
+    def credit(self, order, document_id, identifier_id):
+        if self.fail_with:
+            raise self.fail_with
+        self.credited.append((order.code, document_id, identifier_id))
+        return IssuedDocument(
+            document_id="DUMMY-CREDIT-1",
+            link="https://example.org/d/credit-1",
+            permanent_url=None,
+        )
+
     def download(self, document_id):
         return b"%PDF-1.4 dummy"
 
@@ -432,6 +665,7 @@ class _DummyProvider(InvoiceProvider):
 @pytest.fixture
 def dummy_provider(monkeypatch):
     _DummyProvider.issued = []
+    _DummyProvider.credited = []
     _DummyProvider.fail_with = None
     monkeypatch.setitem(PROVIDERS, "dummy", _DummyProvider)
     return _DummyProvider
@@ -525,3 +759,133 @@ def test_auto_retry_when_the_provider_does_deduplicate(
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
     assert len(retries) == 1
+
+
+@pytest.mark.django_db
+def test_credit_note_skips_when_nothing_was_ever_invoiced(order, event, dummy_provider):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        assert IssuedInvoice.objects.count() == 0
+    assert dummy_provider.credited == []
+
+
+@pytest.mark.django_db
+def test_credit_note_issues_against_the_original_invoices_document_id(
+    order, event, dummy_provider
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        original = IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            kind=IssuedInvoice.KIND_INVOICE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="DUMMY-1",
+        )
+
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.credited == [
+        (order.code, "DUMMY-1", "pretix-dummy-FOOBAR-credit")
+    ]
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(
+            order=order, kind=IssuedInvoice.KIND_CREDIT_NOTE
+        )
+    assert credit_note.status == IssuedInvoice.STATUS_SUCCESS
+    assert credit_note.document_id == "DUMMY-CREDIT-1"
+    assert credit_note.credits_id == original.pk
+    # The order needn't be paid any more — a credit note is by definition issued after a
+    # refund/cancellation, unlike the invoice it reverses.
+    with scopes_disabled():
+        assert order.status == Order.STATUS_PENDING
+
+
+@pytest.mark.django_db
+def test_credit_note_is_not_reissued_once_successful(order, event, dummy_provider):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        original = IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            kind=IssuedInvoice.KIND_INVOICE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="DUMMY-1",
+        )
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR-credit",
+            kind=IssuedInvoice.KIND_CREDIT_NOTE,
+            credits=original,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="DUMMY-CREDIT-1",
+            attempts=1,
+        )
+
+    # No credit() call should happen at all: dummy_provider.credited stays empty.
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.credited == []
+
+
+@pytest.mark.django_db
+def test_credit_note_provider_error_is_terminal(order, event, dummy_provider):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            kind=IssuedInvoice.KIND_INVOICE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="DUMMY-1",
+        )
+    dummy_provider.fail_with = ProviderError("already credited")
+
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(kind=IssuedInvoice.KIND_CREDIT_NOTE)
+    assert credit_note.status == IssuedInvoice.STATUS_ERROR
+    assert credit_note.error_message == "already credited"
+
+
+@pytest.mark.django_db
+def test_credit_note_no_auto_retry_when_the_provider_cannot_deduplicate(
+    order, event, dummy_provider, monkeypatch
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            kind=IssuedInvoice.KIND_INVOICE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="DUMMY-1",
+        )
+    dummy_provider.fail_with = OSError("connection reset")
+    monkeypatch.setattr(dummy_provider, "deduplicates_issuance", False)
+
+    retries = []
+    monkeypatch.setattr(
+        issue_credit_note,
+        "retry",
+        lambda **kw: retries.append(kw) or Exception("retry"),
+    )
+
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert retries == []
