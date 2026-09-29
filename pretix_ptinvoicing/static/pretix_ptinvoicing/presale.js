@@ -6,16 +6,16 @@
 // page — an order with no downloadable tickets — the button stays where it was rendered.
 (function () {
     function place() {
-        var button = document.querySelector(".ptinvoicing-invoice-download");
+        const button = document.querySelector(".ptinvoicing-invoice-download");
         if (!button) return;
 
         // Land next to the ticket button itself, not merely inside .info-download: that
         // container also holds a help paragraph after the button row, so appending to it
         // would drop the button onto a line of its own below the help text.
-        var ticketButton = document.querySelector(
+        const ticketButton = document.querySelector(
             ".info-download form.download-btn-form:not(.ptinvoicing-invoice-download)"
         );
-        var target = ticketButton
+        const target = ticketButton
             ? ticketButton.parentNode
             : document.querySelector(".info-download");
 
