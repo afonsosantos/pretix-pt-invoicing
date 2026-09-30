@@ -1,3 +1,5 @@
+import random
+
 import requests
 from django import forms
 from django.utils import timezone
@@ -26,6 +28,15 @@ class MoloniSettingsForm(SettingsForm):
         help_text=_("Populated automatically once the credentials above are valid."),
     )
     moloni_document_set_id = forms.IntegerField(label=_("Document set (Moloni)"))
+    # Moloni series are scoped to one document type each — the invoice's own document set
+    # cannot number a credit note, so this needs its own, separately configured series.
+    moloni_credit_note_document_set_id = forms.IntegerField(
+        label=_("Credit note document set (Moloni)"),
+        help_text=_(
+            "Must be a series created for the Credit Note document type in Moloni — it "
+            "cannot be the same series as the invoice-receipt's."
+        ),
+    )
     moloni_tax_id = forms.IntegerField(label=_("VAT rate (Moloni)"), required=False)
     moloni_exemption_reason = forms.CharField(
         label=_("Exemption reason"),
@@ -34,8 +45,10 @@ class MoloniSettingsForm(SettingsForm):
     )
     moloni_payment_method_id = forms.IntegerField(
         label=_("Payment method (Moloni)"),
-        required=False,
-        help_text=_("Used for the receipt half of the invoice-receipt."),
+        help_text=_(
+            "An invoice-receipt is one of Moloni's self-paid document types and always "
+            "carries a payment; this is the method it's recorded under."
+        ),
     )
 
 
@@ -60,6 +73,8 @@ class MoloniProvider(InvoiceProvider):
                 "moloni_password",
                 "moloni_company_id",
                 "moloni_document_set_id",
+                "moloni_credit_note_document_set_id",
+                "moloni_payment_method_id",
             )
         )
 
@@ -81,6 +96,17 @@ class MoloniProvider(InvoiceProvider):
             expires_at=float(self.settings.get("moloni_token_expires") or 0),
             on_token=self._store_token,
         )
+
+    def _next_customer_number(self, client, company_id):
+        # customers/insert requires a 'number' Moloni has no auto-increment for; the
+        # official Moloni plugins all fetch one from getNextNumber first (confirmed in
+        # moloni-pt/woocommerce's OrderCustomer::getCustomerNextNumber), falling back to a
+        # random one if the call fails rather than let that break the whole issuance.
+        try:
+            result = client.call("customers/getNextNumber", {"company_id": company_id})
+        except MoloniAPIError:
+            result = None
+        return (result or {}).get("number") or str(random.randint(10**10, 10**11 - 1))
 
     def _resolve_customer_id(self, client, order, company_id):
         """
@@ -114,7 +140,12 @@ class MoloniProvider(InvoiceProvider):
                 return matches[0]["customer_id"]
 
         created = client.call(
-            "customers/insert", {"company_id": company_id, **customer}
+            "customers/insert",
+            {
+                "company_id": company_id,
+                "number": self._next_customer_number(client, company_id),
+                **customer,
+            },
         )
         customer_id = (created or {}).get("customer_id")
         if not customer_id:
@@ -149,8 +180,13 @@ class MoloniProvider(InvoiceProvider):
         company_id = self.settings.get("moloni_company_id", as_type=int)
         date = timezone.now().date().isoformat()
 
+        # Generic documents/getOne (not invoiceReceipts/getOne), and paired with
+        # getUnrelatedProducts for the line items — matching how the official Moloni
+        # WooCommerce plugin's CreateCreditNote service does it, since getOne's own
+        # products don't carry the document_product_id a credit note needs (see
+        # build_credit_note's docstring).
         original = client.call(
-            "invoiceReceipts/getOne",
+            "documents/getOne",
             {"company_id": company_id, "document_id": int(document_id)},
         )
         if not original:
@@ -158,9 +194,18 @@ class MoloniProvider(InvoiceProvider):
                 _("Moloni could not find the original document %(id)s to credit.")
                 % {"id": document_id}
             )
+        unrelated_products = client.call(
+            "documents/getUnrelatedProducts",
+            {"company_id": company_id, "document_id": int(document_id)},
+        )
 
         payload = build_credit_note(
-            int(document_id), original, self.settings, identifier_id, date
+            int(document_id),
+            original,
+            unrelated_products,
+            self.settings,
+            identifier_id,
+            date,
         )
         result = client.call("creditNotes/insert", payload)
 
@@ -197,8 +242,9 @@ class MoloniProvider(InvoiceProvider):
 
     def lookups(self, data):
         """
-        Four dropdowns at once, against credentials the admin hasn't saved yet, using the
-        same {field: [{id, label}]} contract as any other provider's lookups().
+        Five dropdowns at once (company, the two document sets, tax, payment method),
+        against credentials the admin hasn't saved yet, using the same
+        {field: [{id, label}]} contract as any other provider's lookups().
         """
         missing = [
             k
@@ -239,6 +285,14 @@ class MoloniProvider(InvoiceProvider):
         for field, endpoint, id_key, label_key in (
             (
                 "moloni_document_set_id",
+                "documentSets/getAll",
+                "document_set_id",
+                "name",
+            ),
+            # Same list as above — Moloni has no per-type filter on documentSets/getAll,
+            # so both dropdowns are populated from it and the admin picks distinct series.
+            (
+                "moloni_credit_note_document_set_id",
                 "documentSets/getAll",
                 "document_set_id",
                 "name",

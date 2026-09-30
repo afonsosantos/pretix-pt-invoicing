@@ -521,6 +521,8 @@ def test_saving_one_provider_leaves_the_other_untouched(logged_in_client, event)
             "moloni-moloni_password": "pass",
             "moloni-moloni_company_id": "7",
             "moloni-moloni_document_set_id": "3",
+            "moloni-moloni_credit_note_document_set_id": "4",
+            "moloni-moloni_payment_method_id": "5",
         },
     )
     assert response.status_code == 302

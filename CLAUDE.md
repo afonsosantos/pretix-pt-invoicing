@@ -428,16 +428,39 @@ provider-agnostic task machinery as the original invoice, not a parallel concept
   identifier_id)` sends only `date`/`reference`/`identifierId`. Not yet exercised against a real
   Fact.pt account (issuance itself hasn't been either — see "Status" above); the shape is read
   straight off Fact.pt's own API docs page for "Criar Nota de Crédito".
-- Moloni (`providers/moloni/`): has no equivalent one-call endpoint. `MoloniProvider.credit()` first
-  fetches the original document (`invoiceReceipts/getOne`) to get its `customer_id` and line items,
-  then calls `creditNotes/insert` with an `associated_documents: [{associated_id, value}]` entry and
-  a `products` array mirroring the original's. Confirmed against Moloni's public API docs
-  (`moloni.pt/dev/documents/credit-notes/insert/`), but one shape is a known gap: `products[].
-  related_id` is documented as mapping to each original line's `document_product_id`, and
-  `invoiceReceipts/getOne`'s own documented response has no such field — `payload.build_credit_note`
-  uses `product_id` instead (the closest documented value) with a `ponytail:` comment flagging it.
-  Confirm against a real account before trusting a Moloni credit note in production, same bar as the
-  rest of this provider.
+- Moloni (`providers/moloni/`): has no equivalent one-call endpoint. `MoloniProvider.credit()` fetches
+  the original document via the generic `documents/getOne` (not `invoiceReceipts/getOne` — its own
+  `products` don't carry the line id a credit note needs), then `documents/getUnrelatedProducts` for
+  the creditable line items, and calls `creditNotes/insert` with an `associated_documents:
+  [{associated_id, value}]` entry and a `products` array built from those lines. Two shapes here were
+  settled by reading the official Moloni WooCommerce plugin's source
+  (`moloni-pt/woocommerce`, `src/Services/Orders/CreateCreditNote.php` and
+  `src/Enums/DocumentTypes.php`) rather than the published docs, which don't cover them:
+  - `products[].related_id` maps to each line's `document_product_id` from
+    `getUnrelatedProducts` — confirmed by `CreateCreditNote.php` sending exactly
+    `'related_id' => $matchedDocumentProduct['document_product_id']`. An earlier version of this
+    code used `product_id` here, the closest *documented* value but not the right one.
+  - `associated_documents[0].value` is hardcoded `0`, not the original's total: invoice-receipts are
+    one of Moloni's "self-paid" document types (`DocumentTypes::TYPES_SELF_PAID` includes
+    `invoiceReceipts`), and `CreateCreditNote.php` sends `0` as the associated value for exactly
+    that case. An earlier version sent the original's `gross_value`, which is what a *non*-self-paid
+    document type's credit note would need instead.
+  Credit notes also need their own Moloni document set — `moloni_credit_note_document_set_id`,
+  distinct from the invoice-receipt's `moloni_document_set_id` — since a Moloni series is scoped to
+  one document type; reusing the invoice's series for a credit note isn't valid. Both are now
+  required settings, surfaced as separate dropdowns in `lookups()` (both backed by the same
+  `documentSets/getAll` call — Moloni has no per-type filter on it, so the admin picks distinct
+  series from the same list).
+  `customers/insert` also needs a `number` — one of several fields the docs mark required that
+  `build_customer` wasn't sending — fetched via `customers/getNextNumber` and falling back to a
+  random one if that call fails, matching the official plugin's own
+  `OrderCustomer::getCustomerNextNumber`. `moloni_payment_method_id` is likewise now a required
+  setting, not optional: invoice-receipts are in Moloni's `TYPES_WITH_PAYMENTS`, so the document
+  always needs a payment recorded against it.
+  Net-vs-gross `price` on `invoiceReceipts/insert` and `creditNotes/insert` remains genuinely
+  unconfirmed — Moloni's docs don't state it either way, unlike the two gaps above, which had a
+  confirmable answer in the official plugin's source. Confirm against a real account before trusting
+  a Moloni document in production, same bar as the rest of this provider.
 
 ### Displaying amounts
 
@@ -539,22 +562,30 @@ are **not** entry points, just entries in `providers.PROVIDERS`.
 ### The Moloni provider
 
 `pretix_ptinvoicing/providers/moloni/` — the second provider, written as a proof that the core is
-genuinely provider-agnostic. **Built from Moloni's published documentation and exercised only
-against mocks**, unlike the Fact.pt one, which was settled against a real sandbox account. Treat
-every shape here as unverified until someone runs it against a real Moloni account: in particular
-whether `price` is net or gross (Moloni's docs don't say), and the exact `invoiceReceipts/insert`
-entity name.
+genuinely provider-agnostic. **Built from Moloni's published documentation, cross-checked against
+the official `moloni-pt/woocommerce` plugin's source for the shapes the docs don't fully cover, and
+exercised only against mocks** — unlike the Fact.pt one, which was settled against a real sandbox
+account. The two credit-note shapes the docs left ambiguous (`related_id`, and the self-paid
+`associated_documents` value — see "Credit notes (refunds)" below) were settled that way; `price`
+net-vs-gross was not, since the official plugin doesn't resolve it either — that one still needs a
+real account.
 
 - `client.py` — OAuth rather than a static token: `GET /v1/grant/` with the password grant,
   renewed with a 14-day refresh token, and the access token passed as a **GET parameter** on every
   call. `on_token` hands each new pair back to the provider, which caches it in `event.settings` —
   without that, every issuance would burn a fresh password grant.
-- `payload.py` — `customers/insert` shape plus the document's `products`/`payments` arrays. The
-  customer is a separate object: Moloni takes only `customer_id`, there is no inline client block.
-- `__init__.py` — `MoloniSettingsForm` (nine fields, four of them credentials) and
-  `MoloniProvider`. Its `lookups()` returns **four** dropdowns at once (company, document set, tax,
-  payment method) against credentials the admin hasn't saved yet, where Fact.pt's returns one —
-  same `{field: [{id, label}]}` contract, no change to `settings.js`.
+- `payload.py` — `customers/insert` shape plus the document's `products`/`payments` arrays, and
+  `creditNotes/insert`'s shape (see "Credit notes" below). The customer is a separate object: Moloni
+  takes only `customer_id`, there is no inline client block.
+- `__init__.py` — `MoloniSettingsForm` (eleven fields, four of them credentials) and
+  `MoloniProvider`. `_next_customer_number()` calls `customers/getNextNumber` before every
+  `customers/insert` — one of several fields Moloni's docs mark required on that endpoint that
+  earlier versions of this provider weren't sending; falls back to a random number if the call fails,
+  matching the official plugin's `OrderCustomer::getCustomerNextNumber` rather than letting a lookup
+  hiccup block the whole issuance. Its `lookups()` returns **five** dropdowns at once (company, the
+  invoice's document set, the credit note's document set, tax, payment method) against credentials
+  the admin hasn't saved yet, where Fact.pt's returns one — same `{field: [{id, label}]}` contract, no
+  change to `settings.js`.
 - `deduplicates_issuance = False`, which is the whole reason that flag exists.
 
 ## Would a second provider fit? (checked against Moloni's published API)

@@ -88,26 +88,41 @@ def build_document(order, event_settings, customer_id, identifier_id, date):
 
 
 def build_credit_note(
-    original_document_id, original_document, event_settings, identifier_id, date
+    original_document_id,
+    original_document,
+    unrelated_products,
+    event_settings,
+    identifier_id,
+    date,
 ):
     """
-    A full credit note for `original_document` (the invoiceReceipts/getOne response for
-    the invoice being reversed) — Moloni's creditNotes/insert requires the *product* lines
-    plus an associated_documents entry linking back to it.
+    A full credit note for `original_document` (a `documents/getOne` response) — Moloni's
+    creditNotes/insert requires the *product* lines plus an associated_documents entry
+    linking back to it.
 
-    Unverified against a real account, like the rest of this provider. In particular:
-    creditNotes/insert documents `products[].related_id` as mapping to a
-    "document_product_id" that invoiceReceipts/getOne's own docs don't list as a field of
-    each product — using `product_id` here is the closest documented match, not a
-    confirmed one.
+    `unrelated_products` is `documents/getUnrelatedProducts`'s response for the same
+    document: the lines still available to credit, each carrying `document_product_id` —
+    confirmed (against the official Moloni WooCommerce plugin's `CreateCreditNote.php`,
+    which sends `'related_id' => $matchedDocumentProduct['document_product_id']`) to be
+    what `products[].related_id` actually references, not `product_id`.
+
+    `associated_documents[0].value` is 0, not the document's total: invoice-receipts are
+    one of Moloni's "self-paid" document types (`DocumentTypes::TYPES_SELF_PAID` in that
+    same plugin includes `invoiceReceipts`), and a self-paid document's credit note
+    reconciles nothing — the money was already settled when it was issued.
+
+    A separate Moloni document set is required for this
+    (`moloni_credit_note_document_set_id`, not the invoice's own `moloni_document_set_id`):
+    Moloni series are scoped to one document type each, and a series created for
+    Invoice-Receipts cannot be used to number a Credit Note.
     """
     products = []
-    for index, item in enumerate(original_document.get("products") or []):
-        # ponytail: related_id may be wrong (see docstring above); confirm against a real
-        # account before trusting a credit note here.
+    for index, item in enumerate(unrelated_products or []):
         product = {
-            "related_id": item.get("product_id"),
+            "product_id": item.get("product_id"),
+            "related_id": item.get("document_product_id"),
             "name": item.get("name"),
+            "summary": item.get("summary"),
             "qty": item.get("qty"),
             "price": item.get("price"),
             "order": index,
@@ -126,16 +141,13 @@ def build_credit_note(
     return {
         "company_id": event_settings.get("moloni_company_id", as_type=int),
         "customer_id": original_document.get("customer_id"),
-        "document_set_id": event_settings.get("moloni_document_set_id", as_type=int),
+        "document_set_id": event_settings.get(
+            "moloni_credit_note_document_set_id", as_type=int
+        ),
         "date": date,
         "our_reference": identifier_id,
         "your_reference": original_document.get("your_reference"),
         "status": 1,
-        "associated_documents": [
-            {
-                "associated_id": original_document_id,
-                "value": original_document.get("gross_value"),
-            }
-        ],
+        "associated_documents": [{"associated_id": original_document_id, "value": 0}],
         "products": products,
     }

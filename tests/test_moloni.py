@@ -40,6 +40,7 @@ def moloni_event(event, order):
         event.settings.moloni_password = "pass"
         event.settings.moloni_company_id = 7
         event.settings.moloni_document_set_id = 3
+        event.settings.moloni_credit_note_document_set_id = 4
         event.settings.moloni_tax_id = 11
         event.settings.moloni_payment_method_id = 5
         order.status = Order.STATUS_PAID
@@ -51,6 +52,12 @@ def moloni_event(event, order):
 @responses.activate
 def test_issues_through_the_generic_core(moloni_event, order, position):
     mock_grant()
+    responses.add(
+        responses.POST,
+        API.format("customers/getNextNumber"),
+        json={"number": "100"},
+        status=200,
+    )
     responses.add(
         responses.POST,
         API.format("customers/insert"),
@@ -72,6 +79,9 @@ def test_issues_through_the_generic_core(moloni_event, order, position):
     assert invoice.status == IssuedInvoice.STATUS_SUCCESS
     assert invoice.document_id == "900"
     assert invoice.permanent_url == "https://moloni.pt/d/900"
+
+    customer_sent = json.loads(responses.calls[-2].request.body)
+    assert customer_sent["number"] == "100"
 
     sent = json.loads(responses.calls[-1].request.body)
     assert sent["company_id"] == 7
@@ -222,22 +232,29 @@ def test_credit_note_fetches_the_original_then_inserts_a_credit_note(
     mock_grant()
     responses.add(
         responses.POST,
-        API.format("invoiceReceipts/getOne"),
+        API.format("documents/getOne"),
         json={
+            "document_id": 900,
             "customer_id": 42,
             "gross_value": 23.0,
             "your_reference": "FOOBAR",
-            "products": [
-                {
-                    "product_id": 5,
-                    "name": "Ticket",
-                    "qty": 1,
-                    "price": 23.0,
-                    "discount": 0,
-                    "taxes": [{"tax_id": 11}],
-                }
-            ],
         },
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        API.format("documents/getUnrelatedProducts"),
+        json=[
+            {
+                "product_id": 3,
+                "document_product_id": 5,
+                "name": "Ticket",
+                "qty": 1,
+                "price": 23.0,
+                "discount": 0,
+                "taxes": [{"tax_id": 11}],
+            }
+        ],
         status=200,
     )
     responses.add(
@@ -251,7 +268,12 @@ def test_credit_note_fetches_the_original_then_inserts_a_credit_note(
 
     sent = json.loads(responses.calls[-1].request.body)
     assert sent["customer_id"] == 42
-    assert sent["associated_documents"] == [{"associated_id": 900, "value": 23.0}]
+    assert sent["document_set_id"] == 4
+    # Invoice-receipts are a self-paid Moloni document type — the credited value is 0,
+    # not the document's total.
+    assert sent["associated_documents"] == [{"associated_id": 900, "value": 0}]
+    # related_id maps to the *document's* line id (document_product_id), not product_id.
+    assert sent["products"][0]["product_id"] == 3
     assert sent["products"][0]["related_id"] == 5
     assert sent["products"][0]["taxes"] == [{"tax_id": 11, "order": 0, "cumulative": 0}]
 
