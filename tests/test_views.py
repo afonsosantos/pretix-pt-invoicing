@@ -3,7 +3,7 @@ import re
 import pytest
 import responses
 from django_scopes import scopes_disabled
-from pretix.base.models import Order, Team, User
+from pretix.base.models import Order, User
 
 from pretix_ptinvoicing.models import IssuedInvoice
 from pretix_ptinvoicing.providers import PROVIDERS
@@ -15,19 +15,6 @@ INDEX_URL = "/control/event/{}/{}/invoicing/"
 DOWNLOAD_URL = "/control/event/{}/{}/invoicing/{}/download/"
 ISSUE_URL = "/control/event/{}/{}/invoicing/{}/issue/"
 CREDIT_URL = "/control/event/{}/{}/invoicing/{}/credit/"
-
-
-@pytest.fixture
-def logged_in_client(client, event):
-    with scopes_disabled():
-        user = User.objects.create_user("dummy@example.org", "dummy")
-        team = Team.objects.create(
-            organizer=event.organizer, all_event_permissions=True
-        )
-        team.members.add(user)
-        team.limit_events.add(event)
-    client.login(email="dummy@example.org", password="dummy")
-    return client
 
 
 @pytest.mark.django_db
@@ -523,6 +510,10 @@ def test_saving_one_provider_leaves_the_other_untouched(logged_in_client, event)
             "moloni-moloni_document_set_id": "3",
             "moloni-moloni_credit_note_document_set_id": "4",
             "moloni-moloni_payment_method_id": "5",
+            "moloni-moloni_maturity_date_id": "9",
+            "moloni-moloni_product_category_id": "20",
+            "moloni-moloni_product_type": "2",
+            "moloni-moloni_unit_id": "1",
         },
     )
     assert response.status_code == 302
@@ -542,3 +533,80 @@ def test_settings_page_lists_every_registered_provider(logged_in_client, event):
     ).content.decode()
     for identifier in PROVIDERS:
         assert f'data-provider="{identifier}"' in body
+
+
+def _checked_provider(content):
+    return re.search(
+        rb'name="ptinvoicing_provider" value="([^"]*)"\s+checked', content
+    ).group(1)
+
+
+@pytest.mark.django_db
+def test_provider_cards_show_logos_and_preselect(logged_in_client, event):
+    url = SETTINGS_URL.format(event.organizer.slug, event.slug)
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+
+    content = logged_in_client.get(url).content
+    assert b"logos/factpt.svg" in content
+    assert b"logos/moloni.svg" in content
+    assert _checked_provider(content) == b"factpt"
+    # Coming back from the Moloni connect flow: Moloni stays shown, nothing is saved.
+    assert _checked_provider(
+        logged_in_client.get(url + "?provider=moloni").content
+    ) == (b"moloni")
+    assert _checked_provider(logged_in_client.get(url + "?provider=bogus").content) == (
+        b"factpt"
+    )
+    with scopes_disabled():
+        event.settings.flush()
+        assert event.settings.get("ptinvoicing_provider") == "factpt"
+
+
+@pytest.mark.django_db
+def test_settings_inputs_opt_out_of_password_managers(logged_in_client, event):
+    content = logged_in_client.get(
+        SETTINGS_URL.format(event.organizer.slug, event.slug)
+    ).content.decode()
+    token = re.search(r'<input[^>]*name="factpt-factpt_token"[^>]*>', content).group(0)
+    assert 'data-bwignore="true"' in token
+    assert 'data-1p-ignore="true"' in token
+    password = re.search(
+        r'<input[^>]*name="moloni-moloni_password"[^>]*>', content
+    ).group(0)
+    assert 'autocomplete="new-password"' in password
+
+
+@pytest.mark.django_db
+def test_order_page_panel_offers_a_new_invoice_after_a_credited_refund(
+    logged_in_client, plugin_enabled_event, paid_order
+):
+    # Paid → invoiced → refunded → credited → paid again: both old documents stay
+    # listed, and the panel offers a new invoice instead of looking finished.
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="1",
+            document_number="FR A/1",
+        )
+        IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR-credit",
+            kind=IssuedInvoice.KIND_CREDIT_NOTE,
+            credits=invoice,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="2",
+            document_number="NC A/1",
+        )
+
+    body = logged_in_client.get(
+        f"/control/event/{plugin_enabled_event.organizer.slug}/"
+        f"{plugin_enabled_event.slug}/orders/{paid_order.code}/"
+    ).content.decode()
+    assert "FR A/1" in body
+    assert "NC A/1" in body
+    assert "Issue invoice now" in body

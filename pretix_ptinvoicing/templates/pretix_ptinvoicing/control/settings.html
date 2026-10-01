@@ -3,6 +3,7 @@
 {% load bootstrap3 %}
 {% load static %}
 {% block inside %}
+    <link rel="stylesheet" href="{% static 'pretix_ptinvoicing/settings.css' %}">
     <h1>{% trans "Invoicing (PT)" %}</h1>
     <p>
         {% blocktrans trimmed %}
@@ -10,10 +11,37 @@
             confirmed, and configure its API access below.
         {% endblocktrans %}
     </p>
-    <form action="" method="post" class="form-horizontal" enctype="multipart/form-data">
+    <form action="" method="post" class="form-horizontal" enctype="multipart/form-data"
+          autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true">
         {% csrf_token %}
         {% bootstrap_form_errors select_form %}
-        {% bootstrap_form select_form layout="horizontal" %}
+        {% comment %}
+            The provider field is rendered by hand as logo cards (radio inputs, so it
+            still posts as ptinvoicing_provider); the rest of the form renders whole.
+        {% endcomment %}
+        <div class="form-group">
+            <label class="col-md-3 control-label">{{ select_form.ptinvoicing_provider.label }}</label>
+            <div class="col-md-9">
+                <div class="ptinvoicing-provider-cards" role="radiogroup">
+                    {% for card in provider_cards %}
+                        <label class="ptinvoicing-provider-card">
+                            <input type="radio" name="ptinvoicing_provider" value="{{ card.identifier }}"
+                                   {% if card.identifier == selected_provider %}checked{% endif %}>
+                            <span class="ptinvoicing-provider-card-body">
+                                <span class="fa fa-check-circle ptinvoicing-provider-card-check" aria-hidden="true"></span>
+                                {% if card.logo %}
+                                    <img src="{% static card.logo %}" alt="{{ card.label }}">
+                                {% else %}
+                                    {{ card.label }}
+                                {% endif %}
+                            </span>
+                        </label>
+                    {% endfor %}
+                </div>
+                <span class="help-block">{{ select_form.ptinvoicing_provider.help_text }}</span>
+            </div>
+        </div>
+        {% bootstrap_form select_form layout="horizontal" exclude="ptinvoicing_provider" %}
 
         <fieldset>
             <legend>{% trans "E-mail" %}</legend>
@@ -22,8 +50,12 @@
         </fieldset>
 
         {% for block in provider_blocks %}
-            <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}">
+            <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}"
+                      data-lookup-triggers="{{ block.provider.lookup_triggers|join:" " }}">
                 <legend>{{ block.label }}</legend>
+                {% if block.provider.settings_template %}
+                    {% include block.provider.settings_template with provider=block.provider %}
+                {% endif %}
                 {% bootstrap_form_errors block.form %}
                 {% bootstrap_form block.form layout="horizontal" %}
                 <div class="form-group">

@@ -10,13 +10,13 @@
             </h3>
         </div>
         <div class="panel-body">
-            {% if not invoice and not is_paid %}
+            {% if not cycles and not is_paid %}
                 <p class="text-muted">
                     {% trans "Invoices are only issued once the order is paid." %}
                 </p>
             {% endif %}
 
-            {% if invoice or is_paid %}
+            {% if cycles or is_paid %}
                 {% comment %}
                     Same shape as pretix's own "Payments" panel on this page: a
                     table-condensed with one row per document and its own inline actions,
@@ -35,7 +35,12 @@
                         </tr>
                         </thead>
                         <tbody>
-                        {% if invoice %}
+                        {% comment %}
+                            One invoice + credit note pair per cycle, oldest first: an order
+                            paid again after a credited refund gets a new invoice.
+                        {% endcomment %}
+                        {% for cycle in cycles %}
+                        {% with invoice=cycle.invoice credit_note=cycle.credit_note %}
                             <tr>
                                 <td>{% trans "Invoice" %}</td>
                                 <td>
@@ -49,7 +54,7 @@
                                 </td>
                                 <td>
                                     {% if invoice.document_id %}
-                                        {{ invoice.document_id }}
+                                        {{ invoice.display_number }}
                                         {% if invoice.permanent_url %}
                                             &middot;
                                             <a href="{{ invoice.permanent_url }}" target="_blank" rel="noopener">
@@ -97,25 +102,6 @@
                                     <td colspan="4" class="text-danger">{{ invoice.error_message }}</td>
                                 </tr>
                             {% endif %}
-                        {% elif is_paid %}
-                            <tr>
-                                <td>{% trans "Invoice" %}</td>
-                                <td colspan="3" class="text-muted">
-                                    {% trans "No invoice issued for this order yet." %}
-                                </td>
-                                <td class="text-right flip">
-                                    <form method="post" class="form-inline" style="display: inline-block"
-                                          action="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
-                                        {% csrf_token %}
-                                        <input type="hidden" name="next" value="{{ request.path }}">
-                                        <button type="submit" class="btn btn-default btn-xs">
-                                            <span class="fa fa-refresh" aria-hidden="true"></span>
-                                            {% trans "Issue invoice now" %}
-                                        </button>
-                                    </form>
-                                </td>
-                            </tr>
-                        {% endif %}
 
                         {% if invoice.status == "success" %}
                             <tr>
@@ -131,7 +117,7 @@
                                 </td>
                                 <td>
                                     {% if credit_note.document_id %}
-                                        {{ credit_note.document_id }}
+                                        {{ credit_note.display_number }}
                                         {% if credit_note.permanent_url %}
                                             &middot;
                                             <a href="{{ credit_note.permanent_url }}" target="_blank" rel="noopener">
@@ -181,6 +167,32 @@
                                     <td colspan="4" class="text-danger">{{ credit_note.error_message }}</td>
                                 </tr>
                             {% endif %}
+                        {% endif %}
+                        {% endwith %}
+                        {% endfor %}
+
+                        {% if needs_invoice %}
+                            <tr>
+                                <td>{% trans "Invoice" %}</td>
+                                <td colspan="3" class="text-muted">
+                                    {% if cycles %}
+                                        {% trans "Paid again after the last invoice was credited." %}
+                                    {% else %}
+                                        {% trans "No invoice issued for this order yet." %}
+                                    {% endif %}
+                                </td>
+                                <td class="text-right flip">
+                                    <form method="post" class="form-inline" style="display: inline-block"
+                                          action="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="next" value="{{ request.path }}">
+                                        <button type="submit" class="btn btn-default btn-xs">
+                                            <span class="fa fa-refresh" aria-hidden="true"></span>
+                                            {% trans "Issue invoice now" %}
+                                        </button>
+                                    </form>
+                                </td>
+                            </tr>
                         {% endif %}
                         </tbody>
                     </table>

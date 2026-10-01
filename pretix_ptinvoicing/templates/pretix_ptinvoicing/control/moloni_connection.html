@@ -1,0 +1,40 @@
+{% load i18n %}
+{% comment %}
+    Buttons, not nested forms: they post the surrounding settings form to their own
+    formaction, which is also how Connect picks up a client id typed but not yet saved.
+{% endcomment %}
+<div class="form-group">
+    <label class="col-md-3 control-label">{% trans "Moloni connection" %}</label>
+    <div class="col-md-9">
+        {% if provider.connection_state == "connected" %}
+            <p class="form-control-static text-success">
+                <span class="fa fa-check"></span> {% trans "Connected" %}
+            </p>
+        {% elif provider.connection_state == "expired" %}
+            <div class="alert alert-danger">
+                {% blocktrans trimmed %}
+                    The connection to Moloni has expired. Invoices can't be issued until you
+                    connect again.
+                {% endblocktrans %}
+            </div>
+        {% else %}
+            <p class="form-control-static">{% trans "Not connected" %}</p>
+        {% endif %}
+        <button type="submit" class="btn btn-default" formnovalidate
+                formaction="{% url "plugins:pretix_ptinvoicing:moloni_connect" organizer=request.organizer.slug event=request.event.slug %}">
+            {% if provider.connection_state %}{% trans "Reconnect to Moloni" %}{% else %}{% trans "Connect to Moloni" %}{% endif %}
+        </button>
+        {% if provider.connection_state %}
+            <button type="submit" class="btn btn-danger" formnovalidate
+                    formaction="{% url "plugins:pretix_ptinvoicing:moloni_disconnect" organizer=request.organizer.slug event=request.event.slug %}">
+                {% trans "Disconnect" %}
+            </button>
+        {% endif %}
+        <span class="help-block">
+            {% blocktrans trimmed with uri=provider.redirect_uri %}
+                Register <code>{{ uri }}</code> as the redirect URI of your Moloni developer
+                app. Once connected, no username or password is needed.
+            {% endblocktrans %}
+        </span>
+    </div>
+</div>

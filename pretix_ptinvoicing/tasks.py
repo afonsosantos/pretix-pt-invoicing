@@ -47,7 +47,15 @@ def issue_invoice(self, order_pk, event_pk=None):
             )
             return
 
-        identifier_id = IssuedInvoice.build_identifier_id(event, order)
+        # Each successful credit note closes a cycle: an order paid again after its
+        # invoice was credited (refund, then a new payment) gets a new invoice.
+        cycle = IssuedInvoice.objects.filter(
+            order=order,
+            provider=provider.identifier,
+            kind=IssuedInvoice.KIND_CREDIT_NOTE,
+            status=IssuedInvoice.STATUS_SUCCESS,
+        ).count()
+        identifier_id = IssuedInvoice.build_identifier_id(event, order, cycle)
 
         invoice, _created = IssuedInvoice.objects.get_or_create(
             order=order,
@@ -99,6 +107,7 @@ def issue_invoice(self, order_pk, event_pk=None):
 
         invoice.status = IssuedInvoice.STATUS_SUCCESS
         invoice.document_id = document.document_id
+        invoice.document_number = document.number
         invoice.document_link = document.link
         invoice.permanent_url = document.permanent_url
         invoice.error_message = None
@@ -147,19 +156,26 @@ def issue_credit_note(self, order_pk, event_pk=None):
             )
             return
 
-        original = IssuedInvoice.objects.filter(
-            order=order,
-            provider=provider.identifier,
-            kind=IssuedInvoice.KIND_INVOICE,
-            status=IssuedInvoice.STATUS_SUCCESS,
-        ).first()
+        # The latest invoice not credited yet — earlier cycles are already closed.
+        original = (
+            IssuedInvoice.objects.filter(
+                order=order,
+                provider=provider.identifier,
+                kind=IssuedInvoice.KIND_INVOICE,
+                status=IssuedInvoice.STATUS_SUCCESS,
+            )
+            .exclude(credit_notes__status=IssuedInvoice.STATUS_SUCCESS)
+            .order_by("-created")
+            .first()
+        )
         if original is None:
             logger.info(
-                "ptinvoicing: no issued invoice to credit for %s, skipping", order.code
+                "ptinvoicing: no uncredited invoice to credit for %s, skipping",
+                order.code,
             )
             return
 
-        identifier_id = IssuedInvoice.build_credit_identifier_id(event, order)
+        identifier_id = IssuedInvoice.build_credit_identifier_id(original.identifier_id)
 
         credit_note, _created = IssuedInvoice.objects.get_or_create(
             order=order,
@@ -210,6 +226,7 @@ def issue_credit_note(self, order_pk, event_pk=None):
 
         credit_note.status = IssuedInvoice.STATUS_SUCCESS
         credit_note.document_id = document.document_id
+        credit_note.document_number = document.number
         credit_note.document_link = document.link
         credit_note.permanent_url = document.permanent_url
         credit_note.error_message = None

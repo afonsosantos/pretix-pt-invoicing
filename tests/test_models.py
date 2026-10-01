@@ -17,21 +17,38 @@ def test_build_identifier_id_truncates_to_50_chars(order):
 
 
 @pytest.mark.django_db
-def test_build_credit_identifier_id_is_distinct_from_the_invoice_one(event, order):
+def test_later_cycles_get_their_own_identifier_even_when_truncated(event, order):
+    # Paid again after a credited refund: a new key, cycle 0 unchanged.
     assert (
-        IssuedInvoice.build_credit_identifier_id(event, order)
-        == "pretix-dummy-FOOBAR-credit"
+        IssuedInvoice.build_identifier_id(event, order, cycle=1)
+        == "pretix-dummy-FOOBAR-r1"
     )
-    assert IssuedInvoice.build_credit_identifier_id(
-        event, order
-    ) != IssuedInvoice.build_identifier_id(event, order)
+    with scopes_disabled():
+        order.event.slug = "a" * 60
+    long_id = IssuedInvoice.build_identifier_id(order.event, order, cycle=2)
+    assert len(long_id) == 50
+    assert long_id.endswith("-r2")
 
 
 @pytest.mark.django_db
-def test_build_credit_identifier_id_truncates_to_50_chars(order):
+def test_build_credit_identifier_id_is_distinct_from_the_invoice_one(event, order):
+    invoice_id = IssuedInvoice.build_identifier_id(event, order)
+    assert (
+        IssuedInvoice.build_credit_identifier_id(invoice_id)
+        == "pretix-dummy-FOOBAR-credit"
+    )
+    assert IssuedInvoice.build_credit_identifier_id(invoice_id) != invoice_id
+
+
+@pytest.mark.django_db
+def test_build_credit_identifier_id_keeps_its_suffix_when_truncated(order):
     with scopes_disabled():
         order.event.slug = "a" * 60
-    assert len(IssuedInvoice.build_credit_identifier_id(order.event, order)) == 50
+    invoice_id = IssuedInvoice.build_identifier_id(order.event, order)
+    credit_id = IssuedInvoice.build_credit_identifier_id(invoice_id)
+    assert len(credit_id) == 50
+    assert credit_id.endswith("-credit")
+    assert credit_id != invoice_id
 
 
 @pytest.mark.django_db

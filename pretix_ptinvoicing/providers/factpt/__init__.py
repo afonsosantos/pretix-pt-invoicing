@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django import forms
@@ -10,6 +11,8 @@ from .client import FactptAPIError, FactptClient
 from .payload import build_credit_payload, build_payload
 
 __all__ = ["FactptAPIError", "FactptClient", "FactptProvider", "FactptSettingsForm"]
+
+logger = logging.getLogger(__name__)
 
 
 class FactptSettingsForm(SettingsForm):
@@ -70,6 +73,7 @@ class FactptProvider(InvoiceProvider):
     identifier = "factpt"
     verbose_name = "Fact.pt"
     settings_form_class = FactptSettingsForm
+    logo = "pretix_ptinvoicing/logos/factpt.svg"
 
     @property
     def is_configured(self):
@@ -168,6 +172,7 @@ class FactptProvider(InvoiceProvider):
             document_id=data.get("id"),
             link=result.get("link"),
             permanent_url=result.get("permanentUrl"),
+            number=self.document_number(data.get("id")),
         )
 
     def credit(self, order, document_id, identifier_id):
@@ -179,7 +184,19 @@ class FactptProvider(InvoiceProvider):
             document_id=data.get("id"),
             link=result.get("link"),
             permanent_url=result.get("permanentUrl"),
+            number=self.document_number(data.get("id")),
         )
+
+    def document_number(self, document_id):
+        # GET /documents/{id}'s `number`, exactly as Fact.pt returns it ("2025QG/9").
+        if not document_id:
+            return None
+        try:
+            data = self._client().get_document(document_id).get("data") or {}
+        except FactptAPIError:
+            logger.warning("factpt: could not read number of document %s", document_id)
+            return None
+        return data.get("number") or None
 
     def download(self, document_id):
         return self._client().download_document(document_id)

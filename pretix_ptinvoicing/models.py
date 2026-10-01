@@ -49,6 +49,8 @@ class IssuedInvoice(models.Model):
     identifier_id = models.CharField(max_length=50)
 
     document_id = models.CharField(max_length=64, blank=True, null=True)
+    # What people read, e.g. "FR M2026/20"; document_id is only the API's key.
+    document_number = models.CharField(max_length=64, blank=True, null=True)
     document_link = models.CharField(max_length=255, blank=True, null=True)
     permanent_url = models.CharField(max_length=255, blank=True, null=True)
 
@@ -67,16 +69,26 @@ class IssuedInvoice(models.Model):
         return f"{self.order.code} — {self.get_status_display()}"
 
     @staticmethod
-    def build_identifier_id(event, order):
-        # Stable per (event, order) so a retry reuses the same row and the provider's own
-        # duplicate check (Fact.pt rejects a repeated identifierId) backs it up.
-        return f"pretix-{event.slug}-{order.code}"[:50]
+    def build_identifier_id(event, order, cycle=0):
+        # Stable per (event, order, cycle) so a retry reuses the same row and the
+        # provider's own duplicate check (Fact.pt rejects a repeated identifierId) backs
+        # it up. A cycle is one invoice + its credit note: an order paid again after a
+        # credited refund needs a new invoice, hence a new key ("-r1", ...). Cycle 0 keeps
+        # the original format, so rows issued before cycles existed still match.
+        suffix = f"-r{cycle}" if cycle else ""
+        return f"pretix-{event.slug}-{order.code}"[: 50 - len(suffix)] + suffix
 
     @staticmethod
-    def build_credit_identifier_id(event, order):
-        # A distinct key from the invoice's own, so both rows can coexist under the same
-        # unique_together(provider, identifier_id) and a retry reuses the credit note's row.
-        return f"{IssuedInvoice.build_identifier_id(event, order)}-credit"[:50]
+    def build_credit_identifier_id(invoice_identifier_id):
+        # Derived from the invoice it credits: distinct from it under the same
+        # unique_together(provider, identifier_id), one per cycle, and stable so a retry
+        # reuses the credit note's row. The suffix survives truncation.
+        return f"{invoice_identifier_id[:43]}-credit"
+
+    @property
+    def display_number(self):
+        # Rows issued before numbers were stored (or whose lookup failed) show the id.
+        return self.document_number or self.document_id
 
     @property
     def provider_label(self):

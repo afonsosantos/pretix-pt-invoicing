@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from django.db.models.signals import post_save
@@ -6,15 +7,45 @@ from django.template.loader import get_template
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from django_scopes import scopes_disabled
-from pretix.base.models import OrderRefund
-from pretix.base.signals import order_paid
+from pretix.base.models import Event, Event_SettingsStore, OrderRefund
+from pretix.base.signals import order_paid, periodic_task
 from pretix.control.signals import nav_event, nav_event_settings
 from pretix.control.signals import order_info as control_order_info
+from pretix.helpers.periodic import minimum_interval
 from pretix.presale.signals import order_info_top as presale_order_info_top
 
+from .mail import send_connection_expired_email
 from .models import IssuedInvoice
 from .providers import get_provider
 from .tasks import issue_credit_note, issue_invoice
+
+logger = logging.getLogger(__name__)
+
+
+@receiver(periodic_task, dispatch_uid="ptinvoicing_keepalive")
+@minimum_interval(minutes_after_success=24 * 60, minutes_after_error=60)
+def ptinvoicing_keepalive(sender, **kwargs):
+    """
+    Daily InvoiceProvider.keepalive() for every event with a provider selected — what
+    stops Moloni's 14-day refresh token from lapsing on an event with no sales.
+    """
+    with scopes_disabled():
+        event_pks = Event_SettingsStore.objects.filter(
+            key="ptinvoicing_provider"
+        ).values_list("object_id", flat=True)
+        for event in Event.objects.filter(pk__in=event_pks):
+            if "pretix_ptinvoicing" not in event.get_plugins():
+                continue
+            provider = get_provider(event)
+            if provider is None:
+                continue
+            try:
+                dead = provider.keepalive()
+            except Exception:
+                logger.exception("ptinvoicing: keepalive failed for %s", event)
+                continue
+            if dead:
+                send_connection_expired_email(event, provider)
 
 
 @receiver(order_paid, dispatch_uid="ptinvoicing_order_paid")
@@ -95,18 +126,33 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
     # to issue it now. Covers orders paid before the plugin was configured, and re-runs
     # after fixing whatever the provider rejected.
     provider = get_provider(sender)
-    invoice = IssuedInvoice.objects.filter(
-        order=order, kind=IssuedInvoice.KIND_INVOICE
-    ).first()
+    # One invoice + its credit note per cycle, oldest first: paid → refunded → paid again
+    # leaves a credited invoice behind and needs a new one.
+    cycles = [
+        {"invoice": invoice, "credit_note": invoice.credit_notes.first()}
+        for invoice in IssuedInvoice.objects.filter(
+            order=order, kind=IssuedInvoice.KIND_INVOICE
+        ).order_by("created")
+    ]
+    latest_credit = cycles[-1]["credit_note"] if cycles else None
+    is_paid = order.status == order.STATUS_PAID
     ctx = {
         "order": order,
         "request": request,
         "event": sender,
         "provider": provider,
         "configured": bool(provider and provider.is_configured),
-        "invoice": invoice,
-        "credit_note": invoice.credit_notes.first() if invoice else None,
-        "is_paid": order.status == order.STATUS_PAID,
+        "cycles": cycles,
+        "is_paid": is_paid,
+        # Paid, and nothing uncredited covers it: no invoice yet, or the last one was
+        # credited (a refund) before this payment.
+        "needs_invoice": is_paid
+        and (
+            not cycles
+            or bool(
+                latest_credit and latest_credit.status == IssuedInvoice.STATUS_SUCCESS
+            )
+        ),
     }
     # request= is required, not decoration: without it the template renders with a plain
     # Context, no context processors run, and {% csrf_token %} silently emits an empty

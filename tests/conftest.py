@@ -5,7 +5,28 @@ import pytest
 import responses
 from django.utils.timezone import now
 from django_scopes import scopes_disabled
-from pretix.base.models import Event, Item, Order, OrderPosition, Organizer
+from pretix.base.models import (
+    Event,
+    Item,
+    Order,
+    OrderPosition,
+    Organizer,
+    Team,
+    User,
+)
+
+
+@pytest.fixture
+def logged_in_client(client, event):
+    with scopes_disabled():
+        user = User.objects.create_user("dummy@example.org", "dummy")
+        team = Team.objects.create(
+            organizer=event.organizer, all_event_permissions=True
+        )
+        team.members.add(user)
+        team.limit_events.add(event)
+    client.login(email="dummy@example.org", password="dummy")
+    return client
 
 
 @pytest.fixture

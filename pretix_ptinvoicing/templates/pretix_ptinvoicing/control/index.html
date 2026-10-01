@@ -55,7 +55,7 @@
                 <td>
                     {% if invoice.status == "success" %}
                         <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}" target="_blank">
-                            {{ invoice.document_id }}
+                            {{ invoice.display_number }}
                         </a>
                     {% else %}—{% endif %}
                 </td>

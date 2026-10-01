@@ -47,7 +47,12 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   for one provider (`order` FK, not one-to-one — a retry after a network failure reuses the same row
   via `get_or_create(order=..., provider=..., identifier_id=...)`, but a config change that alters
   `identifier_id` would start a new row). Tracks `provider` (the provider's `identifier`), `status`
-  (`pending`/`success`/`error`), the result (`document_id`, `document_link`, `permanent_url`), the
+  (`pending`/`success`/`error`), the result (`document_id`, `document_number`, `document_link`,
+  `permanent_url`; `document_number` is the human number — Moloni `"FR M2026/20"` from
+  `documents/getOne`'s `saft_code`/`document_set_name`/`number`, Fact.pt `"2025QG/9"` exactly as
+  `GET /documents/{id}` returns it, **no mapping tables** — fetched by the provider's
+  `document_number()` right after issuance, which must never raise since the document already
+  exists; templates show `display_number`, falling back to the id), the
   error (`error_message`, `error_detail` — the provider's raw per-field errors), and `attempts`.
   `unique_together = [("provider", "identifier_id")]`, not a global unique on `identifier_id`, so the
   same order could in principle be issued by two providers.
@@ -155,7 +160,11 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
 - `pretix_ptinvoicing/urls.py` — all five views registered under
   `control/event/<organizer>/<event>/invoicing/...` (plain `urlpatterns`, not `event_patterns` —
   Control panel plugin pages use the full literal path, same convention as `pretix-eupago`'s
-  settings/orders pages and pretix's own in-tree plugins).
+  settings/orders pages and pretix's own in-tree plugins). **Provider-specific URLs live in
+  the provider**, as `providers/<name>/urls.py` (Moloni's OAuth connect/disconnect/callback);
+  the core appends each registered provider's `urlpatterns`, found with `importlib.util.find_spec`
+  (not `try/except ImportError`, which would hide a real import error inside one). They join
+  the plugin namespace directly, so names reverse as `plugins:pretix_ptinvoicing:moloni_connect`.
 - `static/pretix_ptinvoicing/presale.js` does the last hop for that button: `fragment_downloads.html`
   has no plugin signal inside it, so the nearest hook renders *above* the ticket buttons, and the
   script moves the form next to them. It appends to the **parent of the existing
@@ -176,7 +185,15 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   returned fields' `<input>`s for `<select>`s. It derives the lookups URL from
   `window.location.pathname` (current page + `lookups/`) rather than a Django `{% url %}` tag, since a
   plain static file has no template context to pull that from. Fields it populated are tracked in
-  `lookupFields` so picking an option doesn't trigger another lookup.
+  `lookupFields` so picking an option doesn't trigger another lookup — except a provider's
+  `lookup_triggers` (Moloni's company, which scopes its other dropdowns), rendered as the
+  fieldset's `data-lookup-triggers`; a trigger the lookup filled in by itself re-runs it once too.
+- The provider picker is **logo cards, not a `<select>`**: `settings.html` renders
+  `ptinvoicing_provider` by hand as radio inputs (`bootstrap_form ... exclude=`), each card showing
+  the provider's `logo` (a static path; `static/pretix_ptinvoicing/logos/`) and styled by
+  `settings.css`. `SettingsView` preselects the posted value, else `?provider=` (the Moloni connect
+  flow returns with `?provider=moloni`, so a provider being set up stays shown without being saved
+  as the event's provider), else the saved one.
 - `pretix_ptinvoicing/migrations/0001_initial.py` — the one migration for `IssuedInvoice`. Depends on
   `pretixbase.0001_initial` (the `Order` FK target). `id` is a `BigAutoField` to match pretix's
   `DEFAULT_AUTO_FIELD`; with a plain `AutoField` every `makemigrations` run would want to write a
@@ -351,6 +368,14 @@ the refund.
 1. **Plugin-level fast path**: `tasks.py` looks up (or creates) the `IssuedInvoice` row for
    `(order, provider, identifier_id)` and returns immediately if it's already `STATUS_SUCCESS` —
    protects against a duplicate `order_paid` signal or two workers racing on the same order.
+   **Cycles**: one invoice + its credit note. An order paid again after its invoice was
+   credited (paid → refunded → paid again) needs a *new* invoice, so the key carries the
+   cycle — the number of successful credit notes so far: cycle 0 keeps the original
+   `pretix-<event>-<code>` (existing rows still match), later ones get `-r1`, `-r2`… A credit
+   note's key is derived from the invoice it credits (`<invoice key>-credit`), and
+   `issue_credit_note` targets the latest invoice not yet successfully credited. The order
+   panel renders one invoice/credit-note pair per cycle plus an "Issue invoice now" row when
+   the order is paid and the latest invoice is credited.
 2. **Provider-level hard guarantee**: the `identifier_id` handed to `issue()`, which each provider must
    pass through to whatever field its API dedupes on (Fact.pt: `document.identifierId`). Even if step 1
    were somehow bypassed, the provider itself rejects the second document.
@@ -478,7 +503,7 @@ Since `pretix_ptinvoicing` is a real Django app, Django's i18n machinery discove
 no pretix-specific wiring needed, `{% load i18n %}` / `_()` / `gettext_lazy()` calls throughout the
 codebase just work once a `.mo` file exists.
 
-The pt_PT catalog is complete (`msgfmt --statistics`: 66 translated, 0 fuzzy, 0 untranslated).
+The pt_PT catalog is complete (`msgfmt --statistics`: 119 translated, 0 fuzzy, 0 untranslated).
 Two things to watch after a `make translate`:
 - **Fuzzy entries are ignored at runtime.** `msgmerge` guesses a translation from a similar old
   string and flags it `#, fuzzy`; the guess is often wrong ("Last attempt" inherited "Última
@@ -574,18 +599,59 @@ real account.
   renewed with a 14-day refresh token, and the access token passed as a **GET parameter** on every
   call. `on_token` hands each new pair back to the provider, which caches it in `event.settings` —
   without that, every issuance would burn a fresh password grant.
+- `views.py` — "Connect to Moloni", the authorization-code grant, so no password has to be
+  stored (username/password stay as an optional fallback). `ConnectView` saves the typed
+  client id/secret and redirects to Moloni; `CallbackView` sits on a **global** URL
+  (`control/ptinvoicing/moloni/callback/`, no event in the path) because Moloni may require an
+  exact `redirect_uri` match — the event and a `state` value travel in the session instead.
+  `state` is checked when Moloni echoes it; when it doesn't (undocumented either way), the
+  one-shot session entry is the CSRF guard. Both of those are **still unconfirmed against a
+  real Moloni account**. The settings page shows the state through the provider's
+  `settings_template` (`moloni_connection.html`), with buttons using `formaction` since they
+  live inside the settings `<form>`.
+  The refresh token lasts 14 days, so `signals.py`'s `ptinvoicing_keepalive` (`periodic_task`,
+  `minimum_interval` daily) calls every selected provider's `keepalive()`; Moloni's rotates the
+  refresh token. Only a refusal *from Moloni* (`MoloniAPIError` with `detail`) with no password
+  to fall back to marks `moloni_connection_expired` and e-mails the event's `contact_mail`; a
+  network failure just waits for tomorrow's run.
 - `payload.py` — `customers/insert` shape plus the document's `products`/`payments` arrays, and
   `creditNotes/insert`'s shape (see "Credit notes" below). The customer is a separate object: Moloni
   takes only `customer_id`, there is no inline client block.
-- `__init__.py` — `MoloniSettingsForm` (eleven fields, four of them credentials) and
+- Every document line needs a `product_id` — Moloni only invoices **catalog products**
+  (`invoiceReceipts/insert` rejected lines without one), where Fact.pt takes lines inline.
+  `MoloniProvider._resolve_product_ids` gives each pretix item one, by reference
+  `pretix-item-<item.pk>`: `products/getByReference` (exact), else `products/insert` — the
+  official WooCommerce plugin's approach. Created with the event's `moloni_product_category_id`
+  (top-level categories only in the dropdown), `moloni_product_type` (service/product) and
+  `moloni_unit_id`, plus the tax/exemption settings; `products/insert` wants the tax's rate
+  `value` too, fetched from `taxes/getAll` only when a product is actually created. Item pks are
+  install-wide unique, so events sharing a Moloni company share products per item, not per event.
+- `__init__.py` — `MoloniSettingsForm` (thirteen fields, four of them credentials) and
   `MoloniProvider`. `_next_customer_number()` calls `customers/getNextNumber` before every
   `customers/insert` — one of several fields Moloni's docs mark required on that endpoint that
   earlier versions of this provider weren't sending; falls back to a random number if the call fails,
   matching the official plugin's `OrderCustomer::getCustomerNextNumber` rather than letting a lookup
-  hiccup block the whole issuance. Its `lookups()` returns **five** dropdowns at once (company, the
-  invoice's document set, the credit note's document set, tax, payment method) against credentials
-  the admin hasn't saved yet, where Fact.pt's returns one — same `{field: [{id, label}]}` contract, no
-  change to `settings.js`.
+  hiccup block the whole issuance. `customers/insert` also needs `maturity_date_id` (its own
+  required setting, a real id) and `payment_method_id` (reuses the document's), and a **real
+  account rejected** the absence of `salesman_id`/`payment_day`/`discount`/`credit_limit`/
+  `delivery_method_id` even though the docs mark them optional — `build_customer` sends 0 for each.
+  Its `lookups()` returns the company list plus tax exemptions (global), and once a company is set,
+  both document sets, tax, payment method and maturity date — same `{field: [{id, label}]}`
+  contract.
+- Line taxes follow the rate **pretix actually charged** on each position (`payload.line_tax`, used
+  by both document lines and `products/insert`): a taxed line sends `moloni_tax_id` **with its rate
+  as `value`** (a real account rejected line taxes without one, "must be float, greater than 0"),
+  a 0% line sends no tax at all but `moloni_exemption_reason`. `MoloniProvider._check_taxes` runs
+  first, before anything is created in Moloni, and refuses on a missing exemption reason or a
+  rate that differs from pretix's — Fact.pt's `_check_tax_rate_matches` guard, for the same
+  reason (net price + the provider's own rate = a different total than the buyer paid).
+- `client.py`'s `call()` sends `human_errors=true` and treats a **list** body as a validation
+  error — Moloni returns those with HTTP 200. From a write (anything not `get*`) **any** list is
+  an error, whatever its entries look like (a real `invoiceReceipts/insert` rejection matched
+  neither documented form); from a read only bare `"1 name"` strings or exact
+  `{code, description}` dicts count, so a `getAll`'s rows aren't mistaken for errors. Before
+  this, rejections crashed with `'list' object has no attribute 'get'`. Rejected bodies are
+  logged at INFO.
 - `deduplicates_issuance = False`, which is the whole reason that flag exists.
 
 ## Would a second provider fit? (checked against Moloni's published API)

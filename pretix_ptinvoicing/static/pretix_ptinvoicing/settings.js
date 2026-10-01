@@ -4,11 +4,22 @@
 //     using whatever is currently typed in (not necessarily saved yet).
 // Must stay a real static file: the Control panel's nonce-based CSP blocks inline scripts.
 document.addEventListener("DOMContentLoaded", function () {
-    const select = document.getElementById("id_ptinvoicing_provider");
+    const radios = document.querySelectorAll("input[name=ptinvoicing_provider]");
     const fieldsets = Array.prototype.slice.call(
         document.querySelectorAll(".ptinvoicing-provider")
     );
-    if (!select || !fieldsets.length) return;
+    if (!radios.length || !fieldsets.length) return;
+
+    function selectedProvider() {
+        const checked = document.querySelector("input[name=ptinvoicing_provider]:checked");
+        return checked ? checked.value : "";
+    }
+
+    // Lookup fields whose value scopes other lookups (Moloni's company): changing one
+    // re-runs the lookup instead of being ignored like the other lookup-filled fields.
+    function triggers(fieldset) {
+        return (fieldset.dataset.lookupTriggers || "").split(" ").filter(Boolean);
+    }
 
     const lookupsUrl = window.location.pathname.replace(/\/?$/, "/") + "lookups/";
     const csrfToken = document.querySelector("input[name=csrfmiddlewaretoken]").value;
@@ -18,7 +29,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
     function activeFieldset() {
         return fieldsets.filter(function (fs) {
-            return fs.dataset.provider === select.value;
+            return fs.dataset.provider === selectedProvider();
         })[0];
     }
 
@@ -34,6 +45,12 @@ document.addEventListener("DOMContentLoaded", function () {
         replacement.name = input.name;
         replacement.id = input.id;
         replacement.className = input.className;
+        // Carry over the password-manager opt-outs (autocomplete, data-*-ignore).
+        Array.prototype.forEach.call(input.attributes, function (attr) {
+            if (attr.name === "autocomplete" || attr.name.indexOf("data-") === 0) {
+                replacement.setAttribute(attr.name, attr.value);
+            }
+        });
         input.replaceWith(replacement);
         return replacement;
     }
@@ -114,6 +131,15 @@ document.addEventListener("DOMContentLoaded", function () {
                     lookupFields.add(input.id);
                 });
                 setStatus(fieldset, "", false);
+
+                // A trigger the dropdown just filled in by itself (the first company,
+                // when none was set yet) fires no change event, so look up once more
+                // with it. Stops on its own: the next request sends that same value.
+                const changed = triggers(fieldset).some(function (name) {
+                    const field = document.getElementById("id_" + prefix + name);
+                    return field && field.value && field.value !== (body.get(name) || "");
+                });
+                if (changed) loadOptions();
             })
             .catch(function () {
                 setStatus(fieldset, "Could not reach the server to load options.", true);
@@ -124,18 +150,23 @@ document.addEventListener("DOMContentLoaded", function () {
         // disabled, not just hidden: a hidden required field still fails native HTML5
         // validation ("not focusable"). <fieldset disabled> excludes it from both.
         fieldsets.forEach(function (fs) {
-            const inactive = fs.dataset.provider !== select.value;
+            const inactive = fs.dataset.provider !== selectedProvider();
             fs.hidden = inactive;
             fs.disabled = inactive;
         });
         loadOptions();
     }
 
-    select.addEventListener("change", showActive);
+    radios.forEach(function (radio) {
+        radio.addEventListener("change", showActive);
+    });
     // Any credential/config change in the active fieldset may change the options.
     fieldsets.forEach(function (fs) {
         fs.addEventListener("change", function (e) {
-            if (e.target !== select && !lookupFields.has(e.target.id)) loadOptions();
+            const name = e.target.name.slice(fs.dataset.provider.length + 1);
+            if (!lookupFields.has(e.target.id) || triggers(fs).indexOf(name) !== -1) {
+                loadOptions();
+            }
         });
     });
     showActive();

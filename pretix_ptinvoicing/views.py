@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import messages
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -167,6 +168,28 @@ class SettingsLookupsView(EventPermissionRequiredMixin, View):
         return JsonResponse({"fields": fields})
 
 
+def _no_autofill(form):
+    """
+    Keep browsers and password managers out of the settings inputs: they'd fill the
+    admin's pretix login into a provider's username/password or token. Browsers ignore
+    autocomplete="off" on password fields, hence "new-password" there; the data-*
+    attributes are the opt-outs Bitwarden, 1Password, LastPass and Dashlane each honour.
+    """
+    for field in form.fields.values():
+        widget = field.widget
+        widget.attrs.update(
+            {
+                "autocomplete": "new-password"
+                if isinstance(widget, forms.PasswordInput)
+                else "off",
+                "data-bwignore": "true",
+                "data-1p-ignore": "true",
+                "data-lpignore": "true",
+                "data-form-type": "other",
+            }
+        )
+
+
 class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
     permission = "can_change_event_settings"
     template_name = "pretix_ptinvoicing/control/settings.html"
@@ -211,27 +234,53 @@ class SettingsView(EventSettingsViewMixin, EventPermissionRequiredMixin, View):
         return self.render(request, select_form, email_form, provider_forms)
 
     def provider_forms(self, request, bound=None):
-        return {
-            identifier: cls.settings_form_class(
+        forms_by_provider = {}
+        for identifier, cls in PROVIDERS.items():
+            form = cls.settings_form_class(
                 obj=request.event,
                 prefix=identifier,
                 data=request.POST if identifier == bound else None,
             )
-            for identifier, cls in PROVIDERS.items()
-        }
+            for name in cls(request.event).hidden_settings_fields():
+                form.fields.pop(name, None)
+            forms_by_provider[identifier] = form
+        return forms_by_provider
 
     def render(self, request, select_form, email_form, provider_forms):
+        for form in (select_form, email_form, *provider_forms.values()):
+            _no_autofill(form)
+        # Which card starts selected: what was just posted, else ?provider= (the Moloni
+        # connect flow returns with it, so a provider being set up stays shown even
+        # though it isn't saved as the event's provider yet), else what's saved.
+        selected = request.POST.get("ptinvoicing_provider")
+        if selected is None:
+            selected = request.GET.get("provider")
+        if selected not in PROVIDERS and selected != "":
+            selected = request.event.settings.get("ptinvoicing_provider") or ""
         return render(
             request,
             self.template_name,
             {
                 "select_form": select_form,
                 "email_form": email_form,
+                "selected_provider": selected,
+                "provider_cards": [
+                    {"identifier": "", "label": _("No invoicing"), "logo": None}
+                ]
+                + [
+                    {
+                        "identifier": identifier,
+                        "label": cls.verbose_name,
+                        "logo": cls.logo,
+                    }
+                    for identifier, cls in PROVIDERS.items()
+                ],
                 "provider_blocks": [
                     {
                         "identifier": identifier,
                         "label": PROVIDERS[identifier].verbose_name,
                         "form": form,
+                        "provider": PROVIDERS[identifier](request.event),
                     }
                     for identifier, form in provider_forms.items()
                 ],
