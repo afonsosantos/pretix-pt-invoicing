@@ -8,10 +8,67 @@ since those are its API's rules.
 """
 
 import logging
+import re
+from dataclasses import dataclass
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
 FINAL_CONSUMER_NIF = "999999990"
+
+
+@dataclass
+class Line:
+    """One line of the document: an order position or a fee, as the providers see it."""
+
+    name: str
+    gross: Decimal
+    tax_rate: Decimal
+    # Stable per pretix product/fee kind — Moloni keys its catalog products on it.
+    catalog_key: str
+    # Unique per line — the line's own reference on the document.
+    reference: str
+
+    @property
+    def net(self):
+        """
+        Net unit price, to 4 decimals, derived from the gross and the rate.
+
+        Not gross - tax_value: pretix rounds tax_value to cents, and the provider adds
+        its VAT back on top of whatever net it gets, so a cent-rounded net comes back a
+        cent off for about one price in five (15.00 at 23% → 12.20 → 15.01). Four
+        decimals keep the error below half a cent for any rate.
+        """
+        return (self.gross * 100 / (100 + self.tax_rate)).quantize(Decimal("0.0001"))
+
+
+def invoice_lines(order):
+    """
+    Everything the buyer paid for: positions *and* fees (payment, service, shipping…).
+    Leaving fees out would issue an invoice below the order total.
+    """
+    lines = [
+        Line(
+            name=str(p.item.name),
+            gross=p.price,
+            tax_rate=p.tax_rate,
+            catalog_key=f"item-{p.item_id}",
+            reference=f"pretix-{p.pk}",
+        )
+        for p in order.positions.select_related("item")
+    ]
+    lines += [
+        Line(
+            name=f.description or str(f.get_fee_type_display()),
+            gross=f.value,
+            tax_rate=f.tax_rate,
+            catalog_key=f"fee-{f.fee_type}",
+            reference=f"pretix-fee-{f.pk}",
+        )
+        for f in order.fees.all()
+        if f.value
+    ]
+    return lines
 
 
 def one_line(value, limit):
@@ -50,6 +107,8 @@ def bare_tin(order, custom_field_is_nif=False):
     if not vat_id:
         return None
 
+    # Buyers type "PT 123 456 789" or "123.456.789" as often as the bare number.
+    vat_id = re.sub(r"[\s.\-]", "", vat_id)
     looks_portuguese = vat_id.upper().startswith("PT") or (
         ia.country and str(ia.country) == "PT"
     )

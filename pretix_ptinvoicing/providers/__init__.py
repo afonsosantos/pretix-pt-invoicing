@@ -2,13 +2,14 @@ import importlib
 import inspect
 import pkgutil
 
-from .base import InvoiceProvider, IssuedDocument, ProviderError
+from .base import InvoiceProvider, IssuedDocument, ProviderError, ProviderUnreachable
 
 __all__ = [
     "PROVIDERS",
     "InvoiceProvider",
     "IssuedDocument",
     "ProviderError",
+    "ProviderUnreachable",
     "get_provider",
     "provider_choices",
 ]

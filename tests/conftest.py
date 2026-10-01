@@ -45,6 +45,8 @@ def event(organizer):
             date_from=now(),
             live=True,
             currency="EUR",
+            # The plugin's views 404 on events that haven't enabled it.
+            plugins="pretix_ptinvoicing",
         )
 
 

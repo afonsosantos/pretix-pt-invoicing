@@ -9,9 +9,19 @@ class ProviderSelectForm(SettingsForm):
     ptinvoicing_provider = forms.ChoiceField(
         label=_("Invoicing provider"),
         required=False,
-        choices=[("", _("— none (no invoices are issued) —"))] + provider_choices(),
+        choices=[("", _("No invoicing"))] + provider_choices(),
         help_text=_(
             "Only the selected provider's settings below are saved and used for issuance."
+        ),
+    )
+    ptinvoicing_auto_issue = forms.BooleanField(
+        label=_("Issue documents automatically"),
+        required=False,
+        initial=True,
+        help_text=_(
+            "Issues the invoice-receipt once an order is paid, and the credit note once "
+            "it is fully refunded. When off, nothing is issued unless you use the "
+            "buttons on the order's page."
         ),
     )
     ptinvoicing_nif_custom_field = forms.BooleanField(
@@ -29,7 +39,10 @@ class ProviderSelectForm(SettingsForm):
         label=_("Show the invoice on the buyer's order page"),
         required=False,
         initial=True,
-        help_text=_("Adds a download link next to pretix's own invoice list."),
+        help_text=_(
+            "Adds download buttons for the invoice and any credit note beside the "
+            "ticket downloads on the buyer's order page."
+        ),
     )
 
 

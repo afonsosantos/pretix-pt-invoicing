@@ -2,90 +2,106 @@
 {% load i18n %}
 {% block title %}{% trans "Invoicing (PT)" %}{% endblock %}
 {% block content %}
-    <h1>{% trans "Issued invoice-receipts" %}</h1>
+    <h1>{% trans "Invoices and credit notes" %}</h1>
 
-    <form method="get" class="form-inline" style="margin-bottom: 1em;">
-        <select name="status" class="form-control" onchange="this.form.submit()">
+    {% comment %}
+        A real submit button, not onchange="this.form.submit()": the Control panel's CSP
+        blocks inline event handlers, which left the filter doing nothing.
+    {% endcomment %}
+    <form method="get" class="form-inline helper-space-below">
+        <label class="sr-only" for="ptinvoicing-query">{% trans "Order code" %}</label>
+        <input type="search" name="query" id="ptinvoicing-query" class="form-control"
+               value="{{ query }}" placeholder="{% trans "Order code" %}">
+        <label class="sr-only" for="ptinvoicing-status">{% trans "Status" %}</label>
+        <select name="status" id="ptinvoicing-status" class="form-control">
             <option value="">{% trans "All statuses" %}</option>
             {% for value, label in status_choices %}
                 <option value="{{ value }}" {% if value == status_filter %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
         </select>
+        <button type="submit" class="btn btn-primary">
+            <span class="fa fa-filter" aria-hidden="true"></span>
+            {% trans "Filter" %}
+        </button>
     </form>
 
-    <table class="table">
-        <thead>
-        <tr>
-            <th>{% trans "Order" %}</th>
-            <th>{% trans "Provider" %}</th>
-            <th>{% trans "Kind" %}</th>
-            <th>{% trans "Status" %}</th>
-            <th>{% trans "Document" %}</th>
-            <th>{% trans "Error" %}</th>
-            <th>{% trans "Attempts" %}</th>
-            <th>{% trans "Last updated" %}</th>
-            <th></th>
-        </tr>
-        </thead>
-        <tbody>
-        {% for invoice in invoices %}
+    <div class="table-responsive">
+        <table class="table">
+            <thead>
             <tr>
-                <td>
-                    <a href="{% url "control:event.order" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}">
-                        {{ invoice.order.code }}
-                    </a>
-                </td>
-                <td>{{ invoice.provider_label }}</td>
-                <td>
-                    {% if invoice.kind == "credit_note" %}
-                        {% trans "Credit note" %}
-                    {% else %}
-                        {% trans "Invoice" %}
-                    {% endif %}
-                </td>
-                <td>
-                    {% if invoice.status == "success" %}
-                        <span class="label label-success">{% trans "Issued" %}</span>
-                    {% elif invoice.status == "error" %}
-                        <span class="label label-danger">{% trans "Error" %}</span>
-                    {% else %}
-                        <span class="label label-warning">{% trans "Processing" %}</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if invoice.status == "success" %}
-                        <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}" target="_blank">
-                            {{ invoice.display_number }}
+                <th>{% trans "Order" %}</th>
+                <th>{% trans "Provider" %}</th>
+                <th>{% trans "Kind" %}</th>
+                <th>{% trans "Status" %}</th>
+                <th>{% trans "Document" %}</th>
+                <th>{% trans "Error" %}</th>
+                <th>{% trans "Attempts" %}</th>
+                <th>{% trans "Last updated" %}</th>
+                <th></th>
+            </tr>
+            </thead>
+            <tbody>
+            {% for invoice in invoices %}
+                <tr>
+                    <td>
+                        <a href="{% url "control:event.order" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}">
+                            {{ invoice.order.code }}
                         </a>
-                    {% else %}—{% endif %}
-                </td>
-                <td>
-                    {% if invoice.error_message %}
-                        <span class="text-danger">{{ invoice.error_message }}</span>
-                    {% else %}—{% endif %}
-                </td>
-                <td>{{ invoice.attempts }}</td>
-                <td>{{ invoice.modified }}</td>
-                <td>
-                    {% if invoice.status == "error" %}
-                        <form method="post"
-                              action="{% if invoice.kind == "credit_note" %}{% url "plugins:pretix_ptinvoicing:credit" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}{% else %}{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}{% endif %}">
-                            {% csrf_token %}
-                            <input type="hidden" name="next" value="{{ request.get_full_path }}">
-                            <button type="submit" class="btn btn-default btn-xs">
+                    </td>
+                    <td>{{ invoice.provider_label }}</td>
+                    <td>
+                        {% if invoice.kind == "credit_note" %}
+                            {% trans "Credit note" %}
+                        {% else %}
+                            {% trans "Invoice" %}
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if invoice.status == "success" %}
+                            <span class="label label-success">{% trans "Issued" %}</span>
+                        {% elif invoice.status == "error" %}
+                            <span class="label label-danger">{% trans "Error" %}</span>
+                        {% else %}
+                            <span class="label label-warning">{% trans "Processing" %}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if invoice.status == "success" %}
+                            <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}" target="_blank">
+                                {{ invoice.display_number }}
+                            </a>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>
+                        {% if invoice.error_message %}
+                            <span class="text-danger" title="{{ invoice.error_text }}">{{ invoice.error_text|truncatechars:160 }}</span>
+                        {% else %}—{% endif %}
+                    </td>
+                    <td>{{ invoice.attempts }}</td>
+                    <td>{{ invoice.modified|date:"SHORT_DATETIME_FORMAT" }}</td>
+                    <td>
+                        {% if invoice.status == "error" %}
+                            <a class="btn btn-default btn-xs"
+                               href="{% if invoice.kind == "credit_note" %}{% url "plugins:pretix_ptinvoicing:credit" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}{% else %}{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=invoice.order.code %}{% endif %}?next={{ request.get_full_path|urlencode }}">
                                 {% trans "Retry" %}
-                            </button>
-                        </form>
-                    {% endif %}
-                </td>
-            </tr>
-        {% empty %}
-            <tr>
-                <td colspan="9">{% trans "No invoices processed yet." %}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
+                            </a>
+                        {% endif %}
+                    </td>
+                </tr>
+            {% empty %}
+                <tr>
+                    <td colspan="9">
+                        {% if status_filter or query %}
+                            {% trans "No documents match this filter." %}
+                        {% else %}
+                            {% trans "No documents issued yet." %}
+                        {% endif %}
+                    </td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
 
     {% include "pretixcontrol/pagination.html" %}
 {% endblock %}

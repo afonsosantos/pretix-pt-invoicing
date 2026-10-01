@@ -1,6 +1,9 @@
 import logging
 
+from django.db import transaction
+from django.utils.translation import gettext as _
 from django_scopes import scopes_disabled
+from pretix.base.i18n import language
 from pretix.base.models import Order
 from pretix.celery_app import app
 
@@ -9,6 +12,128 @@ from .models import IssuedInvoice
 from .providers import ProviderError, get_provider
 
 logger = logging.getLogger(__name__)
+
+
+def _load(order_pk):
+    try:
+        return Order.objects.select_related("event").get(pk=order_pk)
+    except Order.DoesNotExist:
+        logger.warning(
+            "ptinvoicing: order %s no longer exists, skipping task", order_pk
+        )
+        return None
+
+
+def _not_configured(row, provider):
+    # A provider is selected but can't issue (half set up, or Moloni's connection
+    # expired). Recorded rather than skipped, so the order shows up as needing a retry
+    # instead of silently never getting its document.
+    if row.status == IssuedInvoice.STATUS_SUCCESS:
+        return
+    row.status = IssuedInvoice.STATUS_ERROR
+    with language(provider.event.settings.locale):
+        row.error_message = _(
+            "Not issued: %(provider)s is not fully configured, or its connection has "
+            "expired. Fix it in the invoicing settings, then retry."
+        ) % {"provider": provider.verbose_name}
+    row.error_detail = None
+    row.save(update_fields=["status", "error_message", "error_detail", "modified"])
+
+
+def _attempt(task, row, provider, order, call):
+    """
+    One issuance attempt against `row`, shared by invoices and credit notes:
+    pending → success/error. Returns the row on success, else None.
+
+    A ProviderError is terminal (retrying a rejection without a fix won't help — the
+    Control panel's Retry is the way back in). Anything else is transient, and only
+    retried when the provider dedupes on identifier_id: otherwise a call that timed out
+    *after* the document was created would issue it twice.
+    """
+    # Claimed under a row lock: a duplicate signal, a double click or an acks_late
+    # redelivery must not run a second attempt while one is in flight.
+    with transaction.atomic():
+        row = IssuedInvoice.objects.select_for_update().get(pk=row.pk)
+        if row.status == IssuedInvoice.STATUS_SUCCESS or row.in_flight:
+            return None
+        row.attempts += 1
+        row.status = IssuedInvoice.STATUS_PENDING
+        row.error_message = None
+        row.error_detail = None
+        row.save(
+            update_fields=[
+                "attempts",
+                "status",
+                "error_message",
+                "error_detail",
+                "modified",
+            ]
+        )
+
+    try:
+        document = call()
+    except ProviderError as e:
+        row.status = IssuedInvoice.STATUS_ERROR
+        # Stored in the event's language: it's read in the Control panel, not here.
+        with language(provider.event.settings.locale):
+            row.error_message = str(e.message)
+        row.error_detail = e.detail or None
+        row.save(update_fields=["status", "error_message", "error_detail", "modified"])
+        logger.warning(
+            "ptinvoicing: %s rejected %s for %s: %s",
+            provider.identifier,
+            row.kind,
+            order.code,
+            e.as_text(),
+        )
+        return None
+    except Exception as e:  # network/infra failure
+        retry = (
+            provider.deduplicates_issuance and task.request.retries < task.max_retries
+        )
+        with language(provider.event.settings.locale):
+            params = {"provider": provider.verbose_name, "error": str(e)}
+            if retry:
+                message = _("%(error)s — retrying automatically in a few minutes.")
+            elif provider.deduplicates_issuance:
+                message = _("%(error)s — gave up after several attempts.")
+            else:
+                message = _(
+                    "%(error)s — the document may or may not have been created. Check "
+                    "in %(provider)s before retrying: if it was, retrying issues it "
+                    "twice."
+                )
+            row.error_message = message % params
+        row.status = IssuedInvoice.STATUS_ERROR
+        row.save(update_fields=["status", "error_message", "modified"])
+        logger.exception(
+            "ptinvoicing: unexpected failure issuing %s for %s", row.kind, order.code
+        )
+        if retry:
+            raise task.retry(exc=e)
+        return None
+
+    row.status = IssuedInvoice.STATUS_SUCCESS
+    row.document_id = document.document_id
+    row.document_number = document.number
+    row.document_link = document.link
+    row.permanent_url = document.permanent_url
+    row.error_message = None
+    row.error_detail = None
+    row.save()
+    logger.info(
+        "ptinvoicing: %s issued for %s via %s (doc %s)",
+        row.kind,
+        order.code,
+        provider.identifier,
+        row.document_id,
+    )
+    return row
+
+
+def _email(row, send):
+    row.email_sent = send()
+    row.save(update_fields=["email_sent"])
 
 
 @app.task(
@@ -20,18 +145,14 @@ logger = logging.getLogger(__name__)
 def issue_invoice(self, order_pk, event_pk=None):
     # No request/organizer here (Celery task), hence scopes_disabled()
     with scopes_disabled():
-        try:
-            order = Order.objects.select_related("event").get(pk=order_pk)
-        except Order.DoesNotExist:
-            logger.warning(
-                "ptinvoicing: order %s no longer exists, skipping task", order_pk
-            )
+        order = _load(order_pk)
+        if order is None:
             return
 
         if order.status != Order.STATUS_PAID:
-            # order_paid guarantees this; the admin's manual "issue now" button does not.
             # An invoice-receipt states the money was received, so never issue for an
-            # order that isn't paid.
+            # order that isn't paid. order_paid guarantees it once the payment has
+            # committed (signals.py enqueues on commit); the admin's button does not.
             logger.info(
                 "ptinvoicing: order %s is not paid (status %s), skipping",
                 order.code,
@@ -41,20 +162,17 @@ def issue_invoice(self, order_pk, event_pk=None):
 
         event = order.event
         provider = get_provider(event)
-        if provider is None or not provider.is_configured:
-            logger.info(
-                "ptinvoicing: no configured provider for event %s, skipping", event.slug
-            )
+        if provider is None:
+            # "No invoicing" picked: nothing to do, deliberately.
             return
 
         # Each successful credit note closes a cycle: an order paid again after its
         # invoice was credited (refund, then a new payment) gets a new invoice.
-        cycle = IssuedInvoice.objects.filter(
-            order=order,
-            provider=provider.identifier,
-            kind=IssuedInvoice.KIND_CREDIT_NOTE,
-            status=IssuedInvoice.STATUS_SUCCESS,
-        ).count()
+        cycle, invoiced = IssuedInvoice.current_cycle(order, provider.identifier)
+        if invoiced:
+            # This cycle already has its invoice — whatever key it was issued under
+            # (keys for very long event slugs changed format once).
+            return
         identifier_id = IssuedInvoice.build_identifier_id(event, order, cycle)
 
         invoice, _created = IssuedInvoice.objects.get_or_create(
@@ -63,65 +181,17 @@ def issue_invoice(self, order_pk, event_pk=None):
             identifier_id=identifier_id,
             defaults={"status": IssuedInvoice.STATUS_PENDING},
         )
-
-        if invoice.status == IssuedInvoice.STATUS_SUCCESS:
+        if not provider.is_configured:
+            _not_configured(invoice, provider)
             return
 
-        invoice.attempts += 1
-        invoice.status = IssuedInvoice.STATUS_PENDING
-        invoice.error_message = None
-        invoice.error_detail = None
-        invoice.save(
-            update_fields=["attempts", "status", "error_message", "error_detail"]
+        invoice = _attempt(
+            self, invoice, provider, order, lambda: provider.issue(order, identifier_id)
         )
-
-        try:
-            document = provider.issue(order, identifier_id)
-        except ProviderError as e:
-            # Provider-side rejection: retrying without a config/data fix won't help, so
-            # this is terminal — the control panel's Retry button is the way back in.
-            invoice.status = IssuedInvoice.STATUS_ERROR
-            invoice.error_message = e.as_text()
-            invoice.error_detail = e.detail
-            invoice.save(update_fields=["status", "error_message", "error_detail"])
-            logger.warning(
-                "ptinvoicing: %s rejected invoice for %s: %s",
-                provider.identifier,
-                order.code,
-                e.as_text(),
-            )
-            return
-        except Exception as e:  # network/infra failure
-            invoice.status = IssuedInvoice.STATUS_ERROR
-            invoice.error_message = str(e)
-            invoice.save(update_fields=["status", "error_message"])
-            logger.exception(
-                "ptinvoicing: unexpected failure issuing invoice for %s", order.code
-            )
-            # Only retry when the provider would reject a duplicate. Without that, a call
-            # that timed out *after* the document was created would be re-sent and issue a
-            # second official invoice — see InvoiceProvider.deduplicates_issuance.
-            if provider.deduplicates_issuance:
-                raise self.retry(exc=e)
-            return
-
-        invoice.status = IssuedInvoice.STATUS_SUCCESS
-        invoice.document_id = document.document_id
-        invoice.document_number = document.number
-        invoice.document_link = document.link
-        invoice.permanent_url = document.permanent_url
-        invoice.error_message = None
-        invoice.error_detail = None
-        invoice.save()
-        logger.info(
-            "ptinvoicing: invoice issued for %s via %s (doc %s)",
-            order.code,
-            provider.identifier,
-            invoice.document_id,
-        )
-
-        if event.settings.get("ptinvoicing_email_invoice", as_type=bool, default=False):
-            send_invoice_email(order, provider, invoice)
+        if invoice and event.settings.get(
+            "ptinvoicing_email_invoice", as_type=bool, default=False
+        ):
+            _email(invoice, lambda: send_invoice_email(order, provider, invoice))
 
 
 @app.task(
@@ -132,42 +202,25 @@ def issue_invoice(self, order_pk, event_pk=None):
 )
 def issue_credit_note(self, order_pk, event_pk=None):
     """
-    Issue a credit note reversing the order's successfully-issued invoice.
+    Issue a credit note reversing the order's latest uncredited invoice.
 
-    Unlike issue_invoice, this is never fired by a signal — there is no reliable pretix
-    event for "this refund is the one credit note's worth", and every provider seen so far
-    only allows crediting a document's full value anyway. It only runs from the
-    Control-panel button, same as a retry.
+    Fired automatically once refunds bring an order back to fully refunded
+    (signals.ptinvoicing_refund_done), and by hand from the Control panel for anything
+    else — a partial refund, say, since no provider here can credit less than a whole
+    document.
     """
     with scopes_disabled():
-        try:
-            order = Order.objects.select_related("event").get(pk=order_pk)
-        except Order.DoesNotExist:
-            logger.warning(
-                "ptinvoicing: order %s no longer exists, skipping task", order_pk
-            )
+        order = _load(order_pk)
+        if order is None:
             return
 
         event = order.event
         provider = get_provider(event)
-        if provider is None or not provider.is_configured:
-            logger.info(
-                "ptinvoicing: no configured provider for event %s, skipping", event.slug
-            )
+        if provider is None:
             return
 
         # The latest invoice not credited yet — earlier cycles are already closed.
-        original = (
-            IssuedInvoice.objects.filter(
-                order=order,
-                provider=provider.identifier,
-                kind=IssuedInvoice.KIND_INVOICE,
-                status=IssuedInvoice.STATUS_SUCCESS,
-            )
-            .exclude(credit_notes__status=IssuedInvoice.STATUS_SUCCESS)
-            .order_by("-created")
-            .first()
-        )
+        original = IssuedInvoice.uncredited_invoice(order, provider.identifier)
         if original is None:
             logger.info(
                 "ptinvoicing: no uncredited invoice to credit for %s, skipping",
@@ -187,59 +240,21 @@ def issue_credit_note(self, order_pk, event_pk=None):
                 "credits": original,
             },
         )
-
-        if credit_note.status == IssuedInvoice.STATUS_SUCCESS:
+        if not provider.is_configured:
+            _not_configured(credit_note, provider)
             return
 
-        credit_note.attempts += 1
-        credit_note.status = IssuedInvoice.STATUS_PENDING
-        credit_note.error_message = None
-        credit_note.error_detail = None
-        credit_note.save(
-            update_fields=["attempts", "status", "error_message", "error_detail"]
+        credit_note = _attempt(
+            self,
+            credit_note,
+            provider,
+            order,
+            lambda: provider.credit(order, original.document_id, identifier_id),
         )
-
-        try:
-            document = provider.credit(order, original.document_id, identifier_id)
-        except ProviderError as e:
-            credit_note.status = IssuedInvoice.STATUS_ERROR
-            credit_note.error_message = e.as_text()
-            credit_note.error_detail = e.detail
-            credit_note.save(update_fields=["status", "error_message", "error_detail"])
-            logger.warning(
-                "ptinvoicing: %s rejected credit note for %s: %s",
-                provider.identifier,
-                order.code,
-                e.as_text(),
-            )
-            return
-        except Exception as e:  # network/infra failure
-            credit_note.status = IssuedInvoice.STATUS_ERROR
-            credit_note.error_message = str(e)
-            credit_note.save(update_fields=["status", "error_message"])
-            logger.exception(
-                "ptinvoicing: unexpected failure issuing credit note for %s", order.code
-            )
-            if provider.deduplicates_issuance:
-                raise self.retry(exc=e)
-            return
-
-        credit_note.status = IssuedInvoice.STATUS_SUCCESS
-        credit_note.document_id = document.document_id
-        credit_note.document_number = document.number
-        credit_note.document_link = document.link
-        credit_note.permanent_url = document.permanent_url
-        credit_note.error_message = None
-        credit_note.error_detail = None
-        credit_note.save()
-        logger.info(
-            "ptinvoicing: credit note issued for %s via %s (doc %s)",
-            order.code,
-            provider.identifier,
-            credit_note.document_id,
-        )
-
-        if event.settings.get(
+        if credit_note and event.settings.get(
             "ptinvoicing_email_credit_note", as_type=bool, default=False
         ):
-            send_credit_note_email(order, provider, credit_note)
+            _email(
+                credit_note,
+                lambda: send_credit_note_email(order, provider, credit_note),
+            )

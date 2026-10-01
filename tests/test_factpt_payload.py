@@ -2,8 +2,9 @@ from decimal import Decimal
 
 import pytest
 from django_scopes import scopes_disabled
-from pretix.base.models import InvoiceAddress, OrderPosition
+from pretix.base.models import InvoiceAddress, OrderFee, OrderPosition
 
+from pretix_ptinvoicing.orderdata import Line
 from pretix_ptinvoicing.providers.factpt.payload import (
     bare_tin,
     build_client_block,
@@ -88,7 +89,7 @@ def test_build_items_block_reads_defaults_from_event_settings(event, order, posi
     assert items[0]["taxId"] == 5
     assert items[0]["unitId"] == 2
     assert items[0]["type"] == "product"
-    assert items[0]["price"] == "23.00"
+    assert items[0]["price"] == "23.0000"
 
 
 @pytest.mark.django_db
@@ -169,7 +170,62 @@ def test_build_items_block_sends_the_net_price(event, order, item):
         event.settings.factpt_default_tax_id = 5
         items = build_items_block(order, event.settings)
 
-    assert items[0]["price"] == "15.00"
+    assert items[0]["price"] == "15.0000"
+
+
+@pytest.mark.django_db
+def test_build_items_block_net_price_survives_the_round_trip(event, order, item):
+    # 15.00 at 23%: pretix's cent-rounded tax_value gives a net of 12.20, and Fact.pt's
+    # 12.20 + 23% is 15.006 → 15.01, a cent above what the buyer paid.
+    with scopes_disabled():
+        OrderPosition.objects.create(
+            order=order,
+            item=item,
+            price=Decimal("15.00"),
+            tax_rate=Decimal("23.00"),
+            tax_value=Decimal("2.80"),
+        )
+        items = build_items_block(order, event.settings)
+
+    net = Decimal(items[0]["price"])
+    assert (net * Decimal("1.23")).quantize(Decimal("0.01")) == Decimal("15.00")
+
+
+def test_net_price_round_trips_for_every_cent_price():
+    rates = (Decimal(23), Decimal(13), Decimal(6), Decimal(0))
+    for cents in range(1, 20001):
+        gross = Decimal(cents) / 100
+        for rate in rates:
+            line = Line("x", gross, rate, "k", "r")
+            back = (line.net * (100 + rate) / 100).quantize(Decimal("0.01"))
+            assert back == gross, (gross, rate)
+
+
+@pytest.mark.django_db
+def test_build_items_block_includes_fees(event, order, position):
+    # A payment fee is part of what the buyer paid, so it's part of the invoice.
+    with scopes_disabled():
+        OrderFee.objects.create(
+            order=order,
+            fee_type=OrderFee.FEE_TYPE_PAYMENT,
+            value=Decimal("2.00"),
+            tax_rate=Decimal("0.00"),
+            tax_value=Decimal("0.00"),
+        )
+        items = build_items_block(order, event.settings)
+
+    assert [i["price"] for i in items] == ["23.0000", "2.0000"]
+    assert items[1]["description"] == "Payment fee"
+
+
+@pytest.mark.django_db
+def test_bare_tin_accepts_spaces_and_dots(order):
+    with scopes_disabled():
+        InvoiceAddress.objects.create(
+            order=order, vat_id="PT 237.892.294", country="PT"
+        )
+    order.refresh_from_db()
+    assert bare_tin(order) == "237892294"
 
 
 @pytest.mark.django_db

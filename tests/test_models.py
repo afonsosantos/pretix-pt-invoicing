@@ -52,6 +52,26 @@ def test_build_credit_identifier_id_keeps_its_suffix_when_truncated(order):
 
 
 @pytest.mark.django_db
+def test_long_slugs_keep_keys_unique_across_orders_and_cycles(event, order):
+    # Slugs can be 50 characters: plain truncation cut the order code off, so two
+    # orders shared one key (IntegrityError), and a second credit note shared the
+    # first's (silently skipped).
+    other = type(order)(code="ZZZZZ", event=event)
+    with scopes_disabled():
+        event.slug = "e" * 50
+    keys = {
+        IssuedInvoice.build_identifier_id(event, o, cycle)
+        for o in (order, other)
+        for cycle in (0, 1, 2)
+    }
+    credits = {IssuedInvoice.build_credit_identifier_id(k) for k in keys}
+    assert len(keys) == 6
+    assert len(credits) == 6
+    assert not keys & credits
+    assert all(len(k) <= 50 for k in keys | credits)
+
+
+@pytest.mark.django_db
 def test_provider_label_falls_back_to_raw_identifier(order):
     with scopes_disabled():
         invoice = IssuedInvoice(order=order, provider="factpt")

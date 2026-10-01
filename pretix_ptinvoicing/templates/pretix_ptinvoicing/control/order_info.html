@@ -1,203 +1,103 @@
 {% load i18n %}
-{% if configured %}
-    <div class="panel panel-default items">
-        <div class="panel-heading">
-            <h3 class="panel-title">
-                <span class="fa fa-file-text-o" aria-hidden="true"></span>
+<div class="panel panel-default items">
+    <div class="panel-heading">
+        <h3 class="panel-title">
+            <span class="fa fa-file-text-o" aria-hidden="true"></span>
+            {% if provider %}
                 {% blocktrans trimmed with provider=provider.verbose_name %}
                     Invoicing (PT) — {{ provider }}
                 {% endblocktrans %}
-            </h3>
-        </div>
-        <div class="panel-body">
-            {% if not cycles and not is_paid %}
-                <p class="text-muted">
-                    {% trans "Invoices are only issued once the order is paid." %}
-                </p>
+            {% else %}
+                {% trans "Invoicing (PT)" %}
             {% endif %}
-
-            {% if cycles or is_paid %}
-                {% comment %}
-                    Same shape as pretix's own "Payments" panel on this page: a
-                    table-condensed with one row per document and its own inline actions,
-                    rather than a details list per document — reads better once a credit
-                    note sits alongside the invoice.
-                {% endcomment %}
-                <div class="table-responsive">
-                    <table class="table table-condensed">
-                        <thead>
-                        <tr>
-                            <th>{% trans "Kind" %}</th>
-                            <th>{% trans "Status" %}</th>
-                            <th>{% trans "Document" %}</th>
-                            <th>{% trans "Last attempt" %}</th>
-                            <th></th>
-                        </tr>
-                        </thead>
-                        <tbody>
-                        {% comment %}
-                            One invoice + credit note pair per cycle, oldest first: an order
-                            paid again after a credited refund gets a new invoice.
-                        {% endcomment %}
-                        {% for cycle in cycles %}
-                        {% with invoice=cycle.invoice credit_note=cycle.credit_note %}
-                            <tr>
-                                <td>{% trans "Invoice" %}</td>
-                                <td>
-                                    {% if invoice.status == "success" %}
-                                        <span class="label label-success">{% trans "Issued" %}</span>
-                                    {% elif invoice.status == "error" %}
-                                        <span class="label label-danger">{% trans "Error" %}</span>
-                                    {% else %}
-                                        <span class="label label-warning">{% trans "Processing" %}</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if invoice.document_id %}
-                                        {{ invoice.display_number }}
-                                        {% if invoice.permanent_url %}
-                                            &middot;
-                                            <a href="{{ invoice.permanent_url }}" target="_blank" rel="noopener">
-                                                {% blocktrans trimmed with provider=provider.verbose_name %}
-                                                    Open at {{ provider }}
-                                                {% endblocktrans %}
-                                                <span class="fa fa-external-link" aria-hidden="true"></span>
-                                            </a>
-                                        {% endif %}
-                                    {% else %}—{% endif %}
-                                </td>
-                                <td>
-                                    {{ invoice.modified|date:"SHORT_DATETIME_FORMAT" }}
-                                    <span class="text-muted">
-                                        {% blocktrans trimmed count attempts=invoice.attempts %}
-                                            {{ attempts }} attempt
-                                        {% plural %}
-                                            {{ attempts }} attempts
-                                        {% endblocktrans %}
-                                    </span>
-                                </td>
-                                <td class="text-right flip">
-                                    {% if invoice.status == "success" %}
-                                        <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=invoice.pk %}"
-                                           class="btn btn-default btn-xs" target="_blank">
-                                            <span class="fa fa-download" aria-hidden="true"></span>
-                                            {% trans "Download PDF" %}
-                                        </a>
-                                    {% elif is_paid %}
-                                        <form method="post" class="form-inline" style="display: inline-block"
-                                              action="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="next" value="{{ request.path }}">
-                                            <button type="submit" class="btn btn-default btn-xs">
-                                                <span class="fa fa-refresh" aria-hidden="true"></span>
-                                                {% trans "Retry issuance" %}
-                                            </button>
-                                        </form>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% if invoice.status == "error" and invoice.error_message %}
-                                <tr>
-                                    <td></td>
-                                    <td colspan="4" class="text-danger">{{ invoice.error_message }}</td>
-                                </tr>
-                            {% endif %}
-
-                        {% if invoice.status == "success" %}
-                            <tr>
-                                <td>{% trans "Credit note" %}</td>
-                                <td>
-                                    {% if credit_note.status == "success" %}
-                                        <span class="label label-success">{% trans "Issued" %}</span>
-                                    {% elif credit_note.status == "error" %}
-                                        <span class="label label-danger">{% trans "Error" %}</span>
-                                    {% elif credit_note %}
-                                        <span class="label label-warning">{% trans "Processing" %}</span>
-                                    {% else %}—{% endif %}
-                                </td>
-                                <td>
-                                    {% if credit_note.document_id %}
-                                        {{ credit_note.display_number }}
-                                        {% if credit_note.permanent_url %}
-                                            &middot;
-                                            <a href="{{ credit_note.permanent_url }}" target="_blank" rel="noopener">
-                                                {% blocktrans trimmed with provider=provider.verbose_name %}
-                                                    Open at {{ provider }}
-                                                {% endblocktrans %}
-                                                <span class="fa fa-external-link" aria-hidden="true"></span>
-                                            </a>
-                                        {% endif %}
-                                    {% else %}—{% endif %}
-                                </td>
-                                <td>
-                                    {% if credit_note %}
-                                        {{ credit_note.modified|date:"SHORT_DATETIME_FORMAT" }}
-                                        <span class="text-muted">
-                                            {% blocktrans trimmed count attempts=credit_note.attempts %}
-                                                {{ attempts }} attempt
-                                            {% plural %}
-                                                {{ attempts }} attempts
-                                            {% endblocktrans %}
-                                        </span>
-                                    {% else %}—{% endif %}
-                                </td>
-                                <td class="text-right flip">
-                                    {% if credit_note.status == "success" %}
-                                        <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=credit_note.pk %}"
-                                           class="btn btn-default btn-xs" target="_blank">
-                                            <span class="fa fa-download" aria-hidden="true"></span>
-                                            {% trans "Download PDF" %}
-                                        </a>
-                                    {% else %}
-                                        <form method="post" class="form-inline" style="display: inline-block"
-                                              action="{% url "plugins:pretix_ptinvoicing:credit" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
-                                            {% csrf_token %}
-                                            <input type="hidden" name="next" value="{{ request.path }}">
-                                            <button type="submit" class="btn btn-default btn-xs">
-                                                <span class="fa fa-undo" aria-hidden="true"></span>
-                                                {% if credit_note %}{% trans "Retry credit note" %}{% else %}{% trans "Issue credit note" %}{% endif %}
-                                            </button>
-                                        </form>
-                                    {% endif %}
-                                </td>
-                            </tr>
-                            {% if credit_note.status == "error" and credit_note.error_message %}
-                                <tr>
-                                    <td></td>
-                                    <td colspan="4" class="text-danger">{{ credit_note.error_message }}</td>
-                                </tr>
-                            {% endif %}
-                        {% endif %}
-                        {% endwith %}
-                        {% endfor %}
-
-                        {% if needs_invoice %}
-                            <tr>
-                                <td>{% trans "Invoice" %}</td>
-                                <td colspan="3" class="text-muted">
-                                    {% if cycles %}
-                                        {% trans "Paid again after the last invoice was credited." %}
-                                    {% else %}
-                                        {% trans "No invoice issued for this order yet." %}
-                                    {% endif %}
-                                </td>
-                                <td class="text-right flip">
-                                    <form method="post" class="form-inline" style="display: inline-block"
-                                          action="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}">
-                                        {% csrf_token %}
-                                        <input type="hidden" name="next" value="{{ request.path }}">
-                                        <button type="submit" class="btn btn-default btn-xs">
-                                            <span class="fa fa-refresh" aria-hidden="true"></span>
-                                            {% trans "Issue invoice now" %}
-                                        </button>
-                                    </form>
-                                </td>
-                            </tr>
-                        {% endif %}
-                        </tbody>
-                    </table>
-                </div>
-            {% endif %}
-        </div>
+        </h3>
     </div>
-{% endif %}
+    <div class="panel-body">
+        {% if provider and not configured %}
+            <div class="alert alert-warning">
+                {% blocktrans trimmed with provider=provider.verbose_name %}
+                    {{ provider }} is not fully configured, or its connection has expired,
+                    so no documents can be issued for this event.
+                {% endblocktrans %}
+                <a href="{{ settings_url }}">{% trans "Open the invoicing settings" %}</a>
+            </div>
+        {% endif %}
+
+        {% if not cycles and not is_paid %}
+            <p class="text-muted">
+                {% trans "Invoices are only issued once the order is paid." %}
+            </p>
+        {% endif %}
+
+        {% if cycles or is_paid and configured %}
+            {% comment %}
+                Same shape as pretix's own "Payments" panel on this page: a
+                table-condensed with one row per document and its own inline actions,
+                rather than a details list per document — reads better once a credit
+                note sits alongside the invoice.
+            {% endcomment %}
+            <div class="table-responsive">
+                <table class="table table-condensed">
+                    <thead>
+                    <tr>
+                        <th>{% trans "Kind" %}</th>
+                        <th>{% trans "Status" %}</th>
+                        <th>{% trans "Document" %}</th>
+                        <th>{% trans "Last attempt" %}</th>
+                        <th></th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    {% comment %}
+                        One invoice + credit note pair per cycle, oldest first: an order
+                        paid again after a credited refund gets a new invoice. Actions only
+                        while a provider can actually issue (configured).
+                    {% endcomment %}
+                    {% trans "Invoice" as invoice_label %}
+                    {% trans "Credit note" as credit_label %}
+                    {% trans "Retry issuance" as retry_label %}
+                    {% for cycle in cycles %}
+                        {% if is_paid and configured %}
+                            {% include "pretix_ptinvoicing/control/order_document_row.html" with doc=cycle.invoice label=invoice_label action="plugins:pretix_ptinvoicing:issue" action_label=retry_label %}
+                        {% else %}
+                            {% include "pretix_ptinvoicing/control/order_document_row.html" with doc=cycle.invoice label=invoice_label action="" %}
+                        {% endif %}
+
+                        {% if cycle.invoice.status == "success" %}
+                            {% if not configured %}
+                                {% include "pretix_ptinvoicing/control/order_document_row.html" with doc=cycle.credit_note label=credit_label action="" %}
+                            {% elif cycle.credit_note %}
+                                {% trans "Retry credit note" as credit_action %}
+                                {% include "pretix_ptinvoicing/control/order_document_row.html" with doc=cycle.credit_note label=credit_label action="plugins:pretix_ptinvoicing:credit" action_label=credit_action action_icon="undo" %}
+                            {% else %}
+                                {% trans "Issue credit note" as credit_action %}
+                                {% include "pretix_ptinvoicing/control/order_document_row.html" with doc=None label=credit_label action="plugins:pretix_ptinvoicing:credit" action_label=credit_action action_icon="undo" %}
+                            {% endif %}
+                        {% endif %}
+                    {% endfor %}
+
+                    {% if needs_invoice and configured %}
+                        <tr>
+                            <td>{{ invoice_label }}</td>
+                            <td colspan="3" class="text-muted">
+                                {% if cycles %}
+                                    {% trans "Paid again after the last invoice was credited." %}
+                                {% else %}
+                                    {% trans "No invoice issued for this order yet." %}
+                                {% endif %}
+                            </td>
+                            <td class="text-right flip">
+                                <a href="{% url "plugins:pretix_ptinvoicing:issue" event=request.event.slug organizer=request.organizer.slug code=order.code %}?next={{ request.path|urlencode }}"
+                                   class="btn btn-default btn-xs">
+                                    <span class="fa fa-refresh" aria-hidden="true"></span>
+                                    {% trans "Issue invoice now" %}
+                                </a>
+                            </td>
+                        </tr>
+                    {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        {% endif %}
+    </div>
+</div>

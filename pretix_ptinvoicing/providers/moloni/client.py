@@ -4,7 +4,7 @@ import time
 import requests
 from django.utils.translation import gettext_lazy as _
 
-from ..base import ProviderError
+from ..base import ProviderError, ProviderUnreachable
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class MoloniClient:
         refresh_token=None,
         expires_at=0,
         on_token=None,
+        reload_tokens=None,
         timeout=20,
     ):
         self.client_id = client_id
@@ -51,7 +52,26 @@ class MoloniClient:
         self.refresh_token = refresh_token
         self.expires_at = expires_at or 0
         self.on_token = on_token
+        # Returns the stored (access, refresh, expires_at) as they are *now* — see
+        # adopt_rotated().
+        self.reload_tokens = reload_tokens
         self.timeout = timeout
+
+    def adopt_rotated(self):
+        """
+        Moloni rotates the refresh token on every refresh, so when two workers (or the
+        daily keepalive and an issuance) refresh at once, the loser's token has just been
+        spent. Before calling that a dead connection, pick up the pair the winner stored.
+        True if there was a newer one.
+        """
+        if not self.reload_tokens:
+            return False
+        access, refresh, expires_at = self.reload_tokens()
+        if not refresh or refresh == self.refresh_token:
+            return False
+        self.access_token, self.refresh_token = access, refresh
+        self.expires_at = expires_at or 0
+        return True
 
     def _grant(self, **params):
         params.update(
@@ -63,7 +83,9 @@ class MoloniClient:
             )
             data = response.json()
         except requests.RequestException as e:
-            raise MoloniAPIError(_("Could not reach Moloni: %(error)s") % {"error": e})
+            raise ProviderUnreachable(
+                _("Could not reach Moloni: %(error)s") % {"error": e}
+            ) from e
         except ValueError:
             raise MoloniAPIError(
                 _("Invalid response from Moloni (HTTP %(status)s)")
@@ -96,6 +118,8 @@ class MoloniClient:
                     grant_type="refresh_token", refresh_token=self.refresh_token
                 )
             except MoloniAPIError:
+                if self.adopt_rotated():
+                    return self.token()
                 # Refresh tokens expire after 14 days; fall back to the password grant
                 # rather than failing an issuance over it.
                 logger.info(
@@ -139,7 +163,9 @@ class MoloniClient:
             )
             data = response.json()
         except requests.RequestException as e:
-            raise MoloniAPIError(_("Could not reach Moloni: %(error)s") % {"error": e})
+            raise ProviderUnreachable(
+                _("Could not reach Moloni: %(error)s") % {"error": e}
+            ) from e
         except ValueError:
             raise MoloniAPIError(
                 _("Invalid response from Moloni (HTTP %(status)s)")

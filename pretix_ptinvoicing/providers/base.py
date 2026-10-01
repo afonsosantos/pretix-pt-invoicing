@@ -23,6 +23,14 @@ class ProviderError(Exception):
         return self.message
 
 
+class ProviderUnreachable(Exception):
+    """
+    The provider couldn't be reached (network error, timeout). Deliberately *not* a
+    ProviderError: it's transient, so tasks.py retries it when that's safe — and the
+    request may or may not have landed, which a ProviderError would wrongly rule out.
+    """
+
+
 @dataclass
 class IssuedDocument:
     """What every provider returns from issue(): the bits worth storing."""

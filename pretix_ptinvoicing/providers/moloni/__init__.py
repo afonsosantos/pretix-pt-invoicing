@@ -8,10 +8,16 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
 
-from ...orderdata import bare_tin
-from ..base import InvoiceProvider, IssuedDocument, ProviderError
+from ...orderdata import FINAL_CONSUMER_NIF, bare_tin, invoice_lines
+from ..base import (
+    InvoiceProvider,
+    IssuedDocument,
+    ProviderError,
+    ProviderUnreachable,
+)
 from .client import MoloniAPIError, MoloniClient
 from .payload import (
+    COUNTRY_PT,
     build_catalog_product,
     build_credit_note,
     build_customer,
@@ -146,6 +152,14 @@ class MoloniProvider(InvoiceProvider):
         return None
 
     @property
+    def in_use(self):
+        """Saved as the event's provider, and with everything it needs to issue."""
+        return (
+            self.settings.get("ptinvoicing_provider") == self.identifier
+            and self.is_configured
+        )
+
+    @property
     def redirect_uri(self):
         # Shown on the settings page: it's what the admin registers in Moloni.
         from .views import callback_url
@@ -188,9 +202,18 @@ class MoloniProvider(InvoiceProvider):
         """
         if self.connection_state != "connected":
             return False
+        client = self._client()
         try:
-            self._client().refresh()
+            client.refresh()
+        except ProviderUnreachable:
+            logger.warning(
+                "moloni: keepalive could not reach Moloni for %s", self.event
+            )
+            return False
         except MoloniAPIError as e:
+            if client.adopt_rotated():
+                # An issuance refreshed at the same moment; its new pair is stored.
+                return False
             if not e.detail or self._has_password():
                 logger.warning("moloni: keepalive refresh failed for %s", self.event)
                 return False
@@ -208,6 +231,17 @@ class MoloniProvider(InvoiceProvider):
             refresh_token=self.settings.get("moloni_refresh_token") or None,
             expires_at=float(self.settings.get("moloni_token_expires") or 0),
             on_token=self._store_token,
+            reload_tokens=self._reload_tokens,
+        )
+
+    def _reload_tokens(self):
+        # Straight from the database: the settings cache would hand back the very token
+        # another worker just spent.
+        self.settings.flush()
+        return (
+            self.settings.get("moloni_access_token") or None,
+            self.settings.get("moloni_refresh_token") or None,
+            float(self.settings.get("moloni_token_expires") or 0),
         )
 
     def _next_customer_number(self, client, company_id):
@@ -217,7 +251,7 @@ class MoloniProvider(InvoiceProvider):
         # random one if the call fails rather than let that break the whole issuance.
         try:
             result = client.call("customers/getNextNumber", {"company_id": company_id})
-        except MoloniAPIError:
+        except (MoloniAPIError, ProviderUnreachable):
             result = None
         return (result or {}).get("number") or str(random.randint(10**10, 10**11 - 1))
 
@@ -226,35 +260,57 @@ class MoloniProvider(InvoiceProvider):
         Moloni takes only a customer_id — there is no inline client block on the document,
         so the customer has to exist first.
         """
-        tin = bare_tin(
-            order,
-            custom_field_is_nif=self.settings.get(
-                "ptinvoicing_nif_custom_field", as_type=bool, default=False
-            ),
+        custom_field_is_nif = self.settings.get(
+            "ptinvoicing_nif_custom_field", as_type=bool, default=False
         )
+        tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
         customer = build_customer(
             order,
             payment_method_id=self.settings.get(
                 "moloni_payment_method_id", as_type=int
             ),
             maturity_date_id=self.settings.get("moloni_maturity_date_id", as_type=int),
-            custom_field_is_nif=self.settings.get(
-                "ptinvoicing_nif_custom_field", as_type=bool, default=False
-            ),
+            custom_field_is_nif=custom_field_is_nif,
+            country_id=self._country_id(client, order),
         )
 
+        # A failed lookup raises rather than falling through to insert: creating the
+        # customer again is exactly how duplicates pile up.
+        found = client.call(
+            "customers/getByVat",
+            {"company_id": company_id, "vat": tin or FINAL_CONSUMER_NIF},
+        )
+        matches = [
+            c
+            for c in (found if isinstance(found, list) else [])
+            if str(c.get("vat")) == (tin or FINAL_CONSUMER_NIF) and c.get("customer_id")
+        ]
         if tin:
             # Only reuse an unambiguous match: guessing which duplicate an official
-            # invoice belongs to isn't something to do quietly.
-            try:
-                found = client.call(
-                    "customers/getByVat", {"company_id": company_id, "vat": tin}
+            # invoice belongs to isn't something to do quietly — and inserting yet
+            # another would only make it worse.
+            if len(matches) > 1:
+                raise MoloniAPIError(
+                    _(
+                        "Moloni has %(count)s customers with tax number %(vat)s. Merge "
+                        "them in Moloni, then retry."
+                    )
+                    % {"count": len(matches), "vat": tin}
                 )
-            except MoloniAPIError:
-                found = []
-            matches = [c for c in (found or []) if str(c.get("vat")) == tin]
-            if len(matches) == 1:
+            if matches:
                 return matches[0]["customer_id"]
+        else:
+            # Every buyer without a NIF is filed under 999999990, so the name is all
+            # there is to match on. Reuse the lowest id rather than creating one per
+            # sale — the duplication that once bricked a Fact.pt account. Same fiscal
+            # entity, same name: which duplicate is picked doesn't matter.
+            same_name = sorted(
+                int(c["customer_id"])
+                for c in matches
+                if c.get("name") == customer["name"]
+            )
+            if same_name:
+                return same_name[0]
 
         created = client.call(
             "customers/insert",
@@ -269,37 +325,57 @@ class MoloniProvider(InvoiceProvider):
             raise MoloniAPIError(_("Moloni did not return a customer id."))
         return customer_id
 
-    def _resolve_product_ids(self, client, order, company_id, tax_rate):
+    def _country_id(self, client, order):
         """
-        {pretix item pk: Moloni product_id} for the order's lines.
+        Moloni's own id for the buyer's country. Its ids are a list of its own, so
+        anything but Portugal is looked up by ISO code — never defaulted to Portugal,
+        which would put a foreign buyer on an official document as Portuguese.
+        """
+        ia = getattr(order, "invoice_address", None)
+        code = str(ia.country).upper() if ia and ia.country else "PT"
+        if code == "PT":
+            return COUNTRY_PT
+        for country in client.call("countries/getAll") or []:
+            if str(country.get("iso_3166_1", "")).upper() == code:
+                return country["country_id"]
+        raise MoloniAPIError(
+            _("Moloni has no country with code %(code)s.") % {"code": code}
+        )
 
-        Moloni only invoices catalog products, so each pretix item gets one, keyed by
-        reference `pretix-item-<pk>`: found if it already exists, created otherwise (the
-        official WooCommerce plugin does the same). Item pks are unique across the whole
-        pretix install, so events sharing a Moloni company don't collide.
+    def _resolve_product_ids(self, client, lines, company_id, tax_rate):
+        """
+        {line.catalog_key: Moloni product_id} for the order's lines.
+
+        Moloni only invoices catalog products, so each pretix item — and each kind of
+        fee — gets one, keyed by reference `pretix-item-<pk>` / `pretix-fee-<type>`:
+        found if it already exists, created otherwise (the official WooCommerce plugin
+        does the same). Item pks are unique across the whole pretix install, so events
+        sharing a Moloni company don't collide.
         """
         product_ids = {}
-        for position in order.positions.all():
-            item = position.item
-            if item.pk in product_ids:
+        for line in lines:
+            if line.catalog_key in product_ids:
                 continue
-            reference = f"pretix-item-{item.pk}"
-            try:
-                found = client.call(
-                    "products/getByReference",
-                    {"company_id": company_id, "reference": reference, "exact": 1},
-                )
-            except MoloniAPIError:
-                found = []
-            matches = [p for p in found or [] if p.get("reference") == reference]
+            reference = f"pretix-{line.catalog_key}"
+            # Not swallowed: a failed lookup must not fall through to creating the
+            # product a second time.
+            found = client.call(
+                "products/getByReference",
+                {"company_id": company_id, "reference": reference, "exact": 1},
+            )
+            matches = [
+                p
+                for p in (found if isinstance(found, list) else [])
+                if p.get("reference") == reference
+            ]
             if matches:
-                product_ids[item.pk] = matches[0]["product_id"]
+                product_ids[line.catalog_key] = matches[0]["product_id"]
                 continue
 
             created = client.call(
                 "products/insert",
                 build_catalog_product(
-                    position,
+                    line,
                     reference,
                     self.settings,
                     company_id,
@@ -309,10 +385,10 @@ class MoloniProvider(InvoiceProvider):
             product_id = (created or {}).get("product_id")
             if not product_id:
                 raise MoloniAPIError(_("Moloni did not return a product id."))
-            product_ids[item.pk] = product_id
+            product_ids[line.catalog_key] = product_id
         return product_ids
 
-    def _check_taxes(self, client, order, company_id):
+    def _check_taxes(self, client, lines, company_id):
         """
         Refuse to issue unless every line's tax can be stated truthfully; return the
         configured tax's rate (None when no line is taxed).
@@ -323,8 +399,7 @@ class MoloniProvider(InvoiceProvider):
         different amount than the buyer paid. Same guard as Fact.pt's
         _check_tax_rate_matches. Runs before anything is created in Moloni.
         """
-        positions = list(order.positions.all())
-        if any(not p.tax_rate for p in positions) and not self.settings.get(
+        if any(not line.tax_rate for line in lines) and not self.settings.get(
             "moloni_exemption_reason"
         ):
             raise MoloniAPIError(
@@ -333,7 +408,7 @@ class MoloniProvider(InvoiceProvider):
                     "exemption reason. Set one in the invoicing settings."
                 )
             )
-        taxed = [p for p in positions if p.tax_rate]
+        taxed = [line for line in lines if line.tax_rate]
         if not taxed:
             return None
 
@@ -347,8 +422,8 @@ class MoloniProvider(InvoiceProvider):
                 _("VAT rate %(id)s does not exist in this Moloni company.")
                 % {"id": tax_id}
             )
-        for position in taxed:
-            if position.tax_rate != rate:
+        for line in taxed:
+            if line.tax_rate != rate:
                 raise MoloniAPIError(
                     _(
                         "VAT mismatch: pretix charged %(pretix)s%% on this order but the "
@@ -356,7 +431,7 @@ class MoloniProvider(InvoiceProvider):
                         "issued for the wrong amount. Fix the event's tax rule or the "
                         "Moloni VAT rate setting."
                     )
-                    % {"pretix": position.tax_rate, "moloni": rate}
+                    % {"pretix": line.tax_rate, "moloni": rate}
                 )
         return rate
 
@@ -365,11 +440,13 @@ class MoloniProvider(InvoiceProvider):
         company_id = self.settings.get("moloni_company_id", as_type=int)
         date = timezone.now().date().isoformat()
 
-        tax_rate = self._check_taxes(client, order, company_id)
+        lines = invoice_lines(order)
+        tax_rate = self._check_taxes(client, lines, company_id)
         customer_id = self._resolve_customer_id(client, order, company_id)
-        product_ids = self._resolve_product_ids(client, order, company_id, tax_rate)
+        product_ids = self._resolve_product_ids(client, lines, company_id, tax_rate)
         document = build_document(
             order,
+            lines,
             self.settings,
             customer_id,
             identifier_id,
@@ -450,7 +527,7 @@ class MoloniProvider(InvoiceProvider):
                     "document_id": int(document_id),
                 },
             )
-        except MoloniAPIError:
+        except (MoloniAPIError, ProviderUnreachable):
             logger.warning("moloni: could not read number of document %s", document_id)
             return None
         if not isinstance(document, dict) or not document.get("number"):

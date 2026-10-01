@@ -11,8 +11,18 @@
             confirmed, and configure its API access below.
         {% endblocktrans %}
     </p>
+    {% comment %}
+        settings.js is a static file (CSP), so its user-facing strings are handed to it
+        translated, as data-* attributes on the form.
+    {% endcomment %}
     <form action="" method="post" class="form-horizontal" enctype="multipart/form-data"
-          autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true">
+          autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true"
+          id="ptinvoicing-settings"
+          data-text-loading="{% trans "Loading options…" %}"
+          data-text-failed="{% trans "Could not load options:" %}"
+          data-text-unknown="{% trans "unknown error" %}"
+          data-text-unreachable="{% trans "Could not reach the server to load options." %}"
+          data-text-saved="{% trans "Saved value (no longer listed):" %}">
         {% csrf_token %}
         {% bootstrap_form_errors select_form %}
         {% comment %}
@@ -20,9 +30,9 @@
             still posts as ptinvoicing_provider); the rest of the form renders whole.
         {% endcomment %}
         <div class="form-group">
-            <label class="col-md-3 control-label">{{ select_form.ptinvoicing_provider.label }}</label>
+            <label class="col-md-3 control-label" id="ptinvoicing-provider-label">{{ select_form.ptinvoicing_provider.label }}</label>
             <div class="col-md-9">
-                <div class="ptinvoicing-provider-cards" role="radiogroup">
+                <div class="ptinvoicing-provider-cards" role="radiogroup" aria-labelledby="ptinvoicing-provider-label">
                     {% for card in provider_cards %}
                         <label class="ptinvoicing-provider-card">
                             <input type="radio" name="ptinvoicing_provider" value="{{ card.identifier }}"
@@ -60,7 +70,7 @@
                 {% bootstrap_form block.form layout="horizontal" %}
                 <div class="form-group">
                     <div class="col-md-9 col-md-offset-3">
-                        <span class="help-block ptinvoicing-lookup-status"></span>
+                        <span class="help-block ptinvoicing-lookup-status" role="status" aria-live="polite"></span>
                     </div>
                 </div>
             </fieldset>

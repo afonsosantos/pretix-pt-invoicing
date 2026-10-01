@@ -1,0 +1,24 @@
+{% extends "pretixcontrol/event/base.html" %}
+{% load i18n %}
+{% comment %}
+    Confirmation before anything that can't be undone: issuing an official document, or
+    disconnecting a provider. Posts back to the URL that rendered it.
+{% endcomment %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+    <h1>{{ title }}</h1>
+    <p>{{ text }}</p>
+    <form method="post" action="">
+        {% csrf_token %}
+        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+        <div class="form-group submit-group">
+            <a href="{% if next %}{{ next }}{% else %}{% url "plugins:pretix_ptinvoicing:index" event=request.event.slug organizer=request.organizer.slug %}{% endif %}"
+               class="btn btn-default btn-cancel">
+                {% trans "Cancel" %}
+            </a>
+            <button type="submit" class="btn {% if danger %}btn-danger{% else %}btn-primary{% endif %} btn-save">
+                {{ button }}
+            </button>
+        </div>
+    </form>
+{% endblock %}

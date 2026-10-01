@@ -43,6 +43,15 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   inside the Fact.pt provider; writing the Moloni one showed they are pretix-side and Portugal-side
   concerns, not Fact.pt's, and a provider importing from a sibling provider is the smell that says
   so. Field *limits* stay per provider — those are its API's rules.
+  `bare_tin` strips spaces, dots and dashes first ("PT 237.892.294" is a valid NIF, not a final
+  consumer). `invoice_lines(order)` is what both providers invoice: every position **and every
+  fee** (payment/service/shipping… — leaving fees out issued invoices below the order total), as
+  `Line`s. `Line.net` is the net unit price **to 4 decimals, derived from gross and rate**, not
+  `price - tax_value`: pretix rounds `tax_value` to cents, the provider adds its VAT back on top,
+  and a cent-rounded net came back a cent high for ~1 price in 5 at 23% (15.00 → 12.20 → 15.01).
+  `tests/test_factpt_payload.py` sweeps 0.01–200.00 at 23/13/6/0% to prove the round trip. The
+  4-decimal net itself is **unverified against either provider's sandbox** — confirm 15.00/23%
+  comes back as 15.00 before trusting it.
 - `pretix_ptinvoicing/models.py` — `IssuedInvoice`: one row per issuance *attempt* against an `Order`
   for one provider (`order` FK, not one-to-one — a retry after a network failure reuses the same row
   via `get_or_create(order=..., provider=..., identifier_id=...)`, but a config change that alters
@@ -53,13 +62,25 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `GET /documents/{id}` returns it, **no mapping tables** — fetched by the provider's
   `document_number()` right after issuance, which must never raise since the document already
   exists; templates show `display_number`, falling back to the id), the
-  error (`error_message`, `error_detail` — the provider's raw per-field errors), and `attempts`.
+  error (`error_message` — the provider's message — and `error_detail`, its raw per-field errors,
+  stored apart and shown together: `error_items`/`error_text`), `attempts`, and `email_sent`
+  (`None` = mail off, else whether the buyer got the PDF).
   `unique_together = [("provider", "identifier_id")]`, not a global unique on `identifier_id`, so the
   same order could in principle be issued by two providers.
-  `IssuedInvoice.build_identifier_id(event, order)` — `f"pretix-{event.slug}-{order.code}"[:50]` —
+  `IssuedInvoice.build_identifier_id(event, order)` — `pretix-{event.slug}-{order.code}` —
   lives on the model because it *is* the model's key; it's a pretix-side value, not provider-specific,
-  and providers receive it as an argument rather than deriving it.
-- `pretix_ptinvoicing/signals.py` — `order_paid` receiver enqueues `issue_invoice` on Celery;
+  and providers receive it as an argument rather than deriving it. Keys go through `_fit()`: one
+  that fits 50 characters is unchanged (existing rows still match), an over-long one keeps its head
+  and swaps the tail for a hash of the whole. Plain truncation used to cut the order code (slugs
+  can be 50 long), so two orders shared a key — `IntegrityError`, no invoice — and a second cycle's
+  credit note shared the first's and was silently skipped. `current_cycle()` and
+  `uncredited_invoice()` are shared by the tasks and the views' precondition checks. `in_flight`
+  is a `pending` row touched within `STALE_AFTER` (10 min): a worker is on it, don't start another.
+- `pretix_ptinvoicing/signals.py` — `order_paid` receiver enqueues `issue_invoice` on Celery,
+  **via `transaction.on_commit`**: pretix sends `order_paid` inside the payment's transaction, and
+  a worker that loaded the order before the commit saw it unpaid and skipped it for good (pretix's
+  own `TransactionAwareTask` exists for the same reason). Tests must use
+  `django_capture_on_commit_callbacks(execute=True)` — the test transaction never commits.
   `ptinvoicing_refund_done`, on Django's own `post_save` for `OrderRefund` (not an
   `EventPluginSignal` — pretix has none for this), enqueues `issue_credit_note` once refunds have
   brought an order back to fully refunded — see "Credit notes (refunds)" below for the full story.
@@ -69,7 +90,9 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   "Invoicing" entry in both of those navs, and two identically named entries are indistinguishable
   in the sidebar. The pt_PT catalog translates it "Faturação PT" against core's "Facturação";
   `pretix.presale.signals.order_info_top` receiver renders `presale/order_info.html`, the buyer's
-  download button (gated on `ptinvoicing_show_in_order`, and only once a document exists). It
+  download buttons — one per successful document of the event's *current* provider, credit notes
+  included (gated on `ptinvoicing_show_in_order`; another provider's documents are left out, its
+  credentials aren't around to fetch them). It
   deliberately does **not** reuse pretix's own "Invoices" panel: that lists `order.invoices`, i.e.
   pretix's own `Invoice` records, and the provider's document is not one — pretix never generated it
   and doesn't own its number. Note the control and presale signals are both called `order_info`,
@@ -80,25 +103,39 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   anything else puts the button on its own line.
   The control-side `order_info` receiver renders `control/order_info.html` — the per-order panel on the Control-panel
   order page, showing what was issued for that order plus the "Issue invoice now" / "Retry issuance"
-  button. The button only renders for a paid order that isn't already `success`; for an unpaid one the
-  panel says so instead, matching the task's own guard.
+  action (each row via `order_document_row.html`). The action only renders for a paid order that
+  isn't already `success`, and never while the row is `in_flight` (it says "In progress" instead —
+  a second click mid-attempt could issue twice on Moloni). It is **always rendered** once a
+  provider is selected: when that provider isn't configured (or Moloni's connection expired) it
+  shows a warning with a link to the settings instead of disappearing.
 - `pretix_ptinvoicing/tasks.py` — `issue_invoice` (Celery task, `bind=True, max_retries=3,
   default_retry_delay=120`) is the whole orchestration and knows nothing about any specific provider:
   loads the `Order`, returns early unless it's `STATUS_PAID` (the `order_paid` signal guarantees that,
   the admin's manual "issue now" button does not — and an invoice-receipt asserts the money was
-  received), resolves the event's provider via `get_provider(event)`, bails out silently if
-  there is none or it isn't `is_configured`, builds the idempotency key, `get_or_create`s the
-  `IssuedInvoice` row, short-circuits if it's already `STATUS_SUCCESS`, then calls
+  received), resolves the event's provider via `get_provider(event)`, bails out silently if there
+  is none ("No invoicing" is deliberate), returns if the current cycle already has a successful
+  invoice (whatever key it was issued under), builds the idempotency key, `get_or_create`s the
+  `IssuedInvoice` row — and if the provider isn't `is_configured`, records an `error` row saying so
+  rather than skipping silently (an expired Moloni connection used to leave paid orders with no
+  trace). Then `_attempt()`, shared with `issue_credit_note`: **claims the row under
+  `select_for_update`**, refusing a `success` or `in_flight` one — a duplicate signal, a double
+  click or an `acks_late` redelivery must not run a second attempt — then calls
   `provider.issue(order, identifier_id)`. A `ProviderError` is **terminal**: marks the invoice `error`
   and returns, since retrying a provider-level rejection without a config/data fix won't help. Any
   other exception (network/infra) marks `error` too but also `raise self.retry(exc=e)`, since those are
-  expected to be transient. That split is the contract every provider has to respect — see
-  `providers/base.py`.
+  expected to be transient — the stored message says which ("retrying automatically", "gave up",
+  or, for a provider that can't dedupe, "check before retrying: it may have been created"). Messages
+  are stored in the event's language (`pretix.base.i18n.language`). That split is the contract every
+  provider has to respect — see `providers/base.py`.
 - `pretix_ptinvoicing/forms.py` — two `SettingsForm`s, both rendered **without** a form
   prefix (field name = storage key), unlike the provider forms below, and both rendered
   whole rather than as named fields, so a new setting on either needs no template edit:
   - `ProviderSelectForm`: `ptinvoicing_provider` (a `ChoiceField` over `provider_choices()`
-    plus a blank "none" option), `ptinvoicing_nif_custom_field`, `ptinvoicing_show_in_order`.
+    plus a blank "none" option), `ptinvoicing_auto_issue`, `ptinvoicing_nif_custom_field`,
+    `ptinvoicing_show_in_order`. `ptinvoicing_auto_issue` (default on) gates **only the two
+    signal receivers** (`signals._auto_issue`): off means nothing is issued on payment or full
+    refund, and documents come only from the order page's buttons — the tasks themselves don't
+    check it, or the manual buttons would stop working too.
   - `EmailSettingsForm`: `ptinvoicing_email_invoice` and `ptinvoicing_email_credit_note` —
     split into their own form (and its own fieldset in the template, legend "E-mail") so the
     two documents' e-mails can be turned on independently; both off by default. A separate
@@ -107,19 +144,26 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
     selected one" binding rule to apply to it.
 - `pretix_ptinvoicing/mail.py` — `send_invoice_email(order, provider, invoice)` and
   `send_credit_note_email(order, provider, credit_note)`, both thin wrappers around
-  `_send_document_email(order, provider, invoice, subject, text, filename)`: downloads the
-  PDF, parks it in a `CachedFile` and hands it to pretix's `mail()` as `attach_cached_files`.
+  `_send_document_email(...)`: downloads the PDF, parks it in a `CachedFile` and hands it to
+  pretix's `mail()` as `attach_cached_files`; returns whether it went out (stored as
+  `email_sent`, shown on the order panel). The texts name the document number, and the credit
+  note's the invoice it cancels.
   Lives in the core, not in a provider, so every provider gets it. **Every failure is logged
-  and swallowed**: by the time this runs the document is already issued at the provider, and
+  and swallowed** — the `CachedFile` storage included, inside the same `try`: by the time this
+  runs the document is already issued at the provider, and
   a mail problem must not flip a successful issuance to `error` or trigger the task's retry
-  (which would re-enter issuance for an order that already has a document). The credit note's
-  filename gets a `-credit` suffix (`ABCDE-credit.pdf`) so it doesn't collide with the
-  invoice's `ABCDE.pdf` in the buyer's downloads if both were ever saved from the same order.
+  (which would re-enter issuance for an order that already has a document). Filenames come from
+  `IssuedInvoice.filename` (also used by both download views): the credit note gets a `-credit`
+  suffix (`ABCDE-credit.pdf`) so it doesn't collide with the invoice's `ABCDE.pdf`.
   **Named `mail.py`, never `email.py`**: a module called `email.py` in this package
   shadows the stdlib `email` package for anything run with the package directory on `sys.path`,
   which is exactly what the `Makefile`'s `translate` target does (`cd pretix_ptinvoicing && python
   -c ...`). It broke `make translate` with `ModuleNotFoundError: No module named 'email.message'`.
 - `pretix_ptinvoicing/views.py`:
+  - `PluginEnabledMixin` on every Control-panel view (Moloni's too): 404 unless the plugin is
+    enabled for the event. pretix only enforces that for `event_patterns`; these are plain
+    `urlpatterns`, so without it a disabled plugin kept issuing documents. The test `event`
+    fixture enables the plugin for this reason.
   - `SettingsView` (`EventSettingsViewMixin` + `EventPermissionRequiredMixin`,
     `permission = "can_change_event_settings"`) — plain `View`, not a generic `FormView`. Renders
     `ProviderSelectForm`, `EmailSettingsForm`, plus *every* registered provider's
@@ -129,24 +173,34 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
     **only the selected provider's form** is: otherwise a provider the admin isn't editing would
     raise validation errors for its own required fields (e.g. Fact.pt's required token) and block
     every save. Consequence: a save always writes both settings forms, but only the selected
-    provider's; other providers keep whatever was stored.
+    provider's; other providers keep whatever was stored. `provider_forms()` and
+    `save_valid_fields()` are module-level so Moloni's `ConnectView` can reuse them.
   - `IndexView` (`ListView`, `permission = "can_view_orders"`) — one row per `IssuedInvoice` for the
-    event, filterable by `status` via `?status=`. The provider column renders
+    event, filterable by `status` (`?status=`) and order code (`?query=`) through a form with a real
+    Filter button — **no inline `onchange`/`style`**: the Control panel's CSP blocks both, which had
+    left the filter dead. Use pretix's `helper-*` classes for layout. The provider column renders
     `IssuedInvoice.provider_label`, which falls back to the raw stored identifier if that provider has
     since been removed from `PROVIDERS`.
-  - `IssueView` (`permission = "can_change_orders"`) — re-enqueues `issue_invoice` for one order,
-    keyed on the **order code**, not on an `IssuedInvoice` pk. One endpoint therefore covers both the
+  - `IssueView` (`permission = "can_change_orders"`) — **GET renders `control/confirm.html`, POST
+    enqueues** `issue_invoice` for one order: issuing an official document reported to the AT
+    can't be undone, so it is never one click. Keyed on the **order code**, not on an
+    `IssuedInvoice` pk. One endpoint therefore covers both the
     "retry after a validation failure" case (bad NIF, missing tax mapping — something the task's own
     automatic retry deliberately won't do) *and* issuing for an order that has no row at all: one paid
-    before the plugin was configured, or paid by hand in the admin. Redirects to a POSTed `next` when
-    it passes `url_has_allowed_host_and_scheme`, else to the index — that's how the order-page panel
-    returns the admin to the order they were looking at.
+    before the plugin was configured, or paid by hand in the admin. `check()` refuses up front, with
+    an error message, whatever the task would silently skip — no provider, not configured, an
+    attempt in flight, unpaid, already invoiced — instead of a "queued" that does nothing. Redirects
+    to `next` (POSTed, or the GET's query string) when it passes `url_has_allowed_host_and_scheme`,
+    else to the index — that's how the order-page panel returns the admin to the order they were
+    looking at. `IssueCreditNoteView` is the same flow with another task, precondition and text.
   - `DownloadView` (`permission = "can_view_orders"`) — proxies the provider's download endpoint so
     the API token never reaches the browser. 404s if the event's *current* provider isn't the one that
-    issued the row, since another provider's credentials can't fetch that document.
+    issued the row, since another provider's credentials can't fetch that document. A provider
+    failure redirects back to the order page with the error, rather than a bare 404.
   - `OrderInvoiceDownloadView` — the same PDF for the **buyer**, on the presale side. No logged-in
     user there, so it authenticates the way pretix's own invoice download does: `OrderDetailMixin`
-    checks the order secret in the URL. It is the only view registered through `event_patterns` in
+    checks the order secret in the URL. 404s when `ptinvoicing_show_in_order` is off; a provider
+    failure sends the buyer back to the order page with a message. It is the only view registered through `event_patterns` in
     `urls.py` rather than a literal `control/...` path — pretix mounts a plugin's `event_patterns`
     under the event (`pretix/multidomain/maindomain_urlconf.py:63`), which is also what makes
     `{% eventurl %}` resolve it, including on a custom event domain.
@@ -154,9 +208,10 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
     backing live dropdowns on the settings page. Takes `provider` plus that provider's field values
     **straight from the POST body, prefix-stripped** (*not* from `event.settings`) so it reflects
     whatever the admin has currently typed into the form, before it's saved, then returns
-    `{"fields": {<field name>: [{"id", "label"}, ...]}}`. A `ProviderError` (bad token, unreachable) is
-    returned as `{"error": ...}` with HTTP 400; the settings-page JS surfaces that in the fieldset's
-    `.ptinvoicing-lookup-status` line rather than failing silently.
+    `{"fields": {<field name>: [{"id", "label"}, ...]}}`. A `ProviderError` (bad token) or
+    `ProviderUnreachable` is returned as `{"error": ...}` with HTTP 400; the settings-page JS
+    surfaces that in the fieldset's `.ptinvoicing-lookup-status` line (`role="status"`,
+    `aria-live`) rather than failing silently.
 - `pretix_ptinvoicing/urls.py` — all five views registered under
   `control/event/<organizer>/<event>/invoicing/...` (plain `urlpatterns`, not `event_patterns` —
   Control panel plugin pages use the full literal path, same convention as `pretix-eupago`'s
@@ -188,6 +243,8 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `lookupFields` so picking an option doesn't trigger another lookup — except a provider's
   `lookup_triggers` (Moloni's company, which scopes its other dropdowns), rendered as the
   fieldset's `data-lookup-triggers`; a trigger the lookup filled in by itself re-runs it once too.
+  Being static, it can't call gettext: its user-facing strings come translated from the template,
+  as `data-text-*` attributes on the settings `<form>`.
 - The provider picker is **logo cards, not a `<select>`**: `settings.html` renders
   `ptinvoicing_provider` by hand as radio inputs (`bootstrap_form ... exclude=`), each card showing
   the provider's `logo` (a static path; `static/pretix_ptinvoicing/logos/`) and styled by
@@ -207,7 +264,9 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   carrying a `detail` dict of raw per-field errors alongside a human `as_text()` so the admin panel can
   show exactly what was rejected. Terminal by contract: `tasks.py` will not retry it. Transient
   failures must surface as some *other* exception type; that's the only signal the task has to tell the
-  two apart.
+  two apart. Both clients raise `ProviderUnreachable` (deliberately *not* a `ProviderError`) for
+  `requests` failures — Fact.pt's used to wrap timeouts in `FactptAPIError`, which made its
+  automatic retry dead code. Code that swallows lookup errors must catch both.
 - `IssuedDocument` — dataclass, `document_id` / `link` / `permanent_url`. What `issue()` returns.
 - `InvoiceProvider` — `identifier`, `verbose_name`, `settings_form_class`,
   `deduplicates_issuance`, constructed with the `event`; `is_configured`,
@@ -322,11 +381,12 @@ event settings in one flat hierarkey namespace shared with core and every other 
     without the flag, `"...same details..."`). A real account reached eleven clients sharing
     999999990, seven of them the same name, which bricked issuance for *every* final consumer.
     Reuse is handled by `_resolve_client_id` instead — see below.
-  - `build_items_block(order, event_settings)` — one inline item per `order.positions.all()`
-    (pretix's non-canceled-positions manager), with `taxId`/`unitId`/`type` all coming from the
+  - `build_items_block(order, event_settings)` — one inline item per `invoice_lines(order)` (every
+    non-canceled position, plus every fee), with `taxId`/`unitId`/`type` all coming from the
     event's plugin settings (`factpt_default_tax_id`/`_unit_id`/`_type`), **not** derived from the
     item's own `tax_rate` — see "Known rough edges" below.
-    `price` is the **net** unit price, `position.price - position.tax_value`. Fact.pt applies
+    `price` is the **net** unit price, `Line.net` (4 decimals, from gross and rate — see
+    `orderdata.py` above for why not `price - tax_value`). Fact.pt applies
     `taxId`'s VAT on top of whatever `price` it is given, while pretix's `position.price` is gross
     (core uses it as `gross_value`, `pretix/base/services/invoices.py:308`). Verified against the
     sandbox: `price: "15.00"` with a 23% `taxId` came back as `gross: "18.45"`. Sending the gross
@@ -419,10 +479,12 @@ provider-agnostic task machinery as the original invoice, not a parallel concept
   `instance.state == REFUND_STATE_DONE`. Unlike an `EventPluginSignal`, a raw model signal fires for
   *every* event regardless of whether this plugin is enabled there, so the receiver checks
   `"pretix_ptinvoicing" in order.event.get_plugins()` itself before doing anything.
-  It only enqueues `issue_credit_note` once `order.payment_refund_sum` (pretix's own "payments
-  confirmed minus refunds done/in transit/created" property) reaches zero — i.e. once refunds have
-  actually brought the order back to fully refunded, whether that took one refund or several partial
-  ones. A partial refund that doesn't (yet) zero it out is left alone: crediting more than was
+  It only enqueues `issue_credit_note` once `_refunded_in_full(order)`: confirmed payments minus
+  refunds that are **done** reach zero — i.e. once refunds have actually brought the order back to
+  fully refunded, whether that took one refund or several partial ones. Deliberately **not**
+  pretix's `payment_refund_sum`, which also subtracts refunds merely created or in transit: those
+  can still fail, and a credit note for money never returned can't be undone. The check and the
+  enqueue both run on commit, like `order_paid`'s. A partial refund that doesn't (yet) zero it out is left alone: crediting more than was
   actually refunded, just because *a* refund completed, would be wrong, and no provider here can
   credit less than a document's full value anyway (rough edge #10).
 - Control panel: `order_info.html`'s per-order panel is a `table.table-condensed` — one row per
@@ -503,7 +565,10 @@ Since `pretix_ptinvoicing` is a real Django app, Django's i18n machinery discove
 no pretix-specific wiring needed, `{% load i18n %}` / `_()` / `gettext_lazy()` calls throughout the
 codebase just work once a `.mo` file exists.
 
-The pt_PT catalog is complete (`msgfmt --statistics`: 119 translated, 0 fuzzy, 0 untranslated).
+The pt_PT catalog is complete (`msgfmt --statistics`: 165 translated, 0 fuzzy, 0 untranslated).
+"Provider" is "serviço de faturação", never "fornecedor": on an invoice, *fornecedor* is the
+seller. "Retry issuance" is "Tentar emitir novamente", not "Reemitir" (which reads as issuing
+again).
 Two things to watch after a `make translate`:
 - **Fuzzy entries are ignored at runtime.** `msgmerge` guesses a translation from a similar old
   string and flags it `#, fuzzy`; the guess is often wrong ("Last attempt" inherited "Última
@@ -600,27 +665,42 @@ real account.
   call. `on_token` hands each new pair back to the provider, which caches it in `event.settings` —
   without that, every issuance would burn a fresh password grant.
 - `views.py` — "Connect to Moloni", the authorization-code grant, so no password has to be
-  stored (username/password stay as an optional fallback). `ConnectView` saves the typed
-  client id/secret and redirects to Moloni; `CallbackView` sits on a **global** URL
+  stored (username/password stay as an optional fallback). `ConnectView` saves every *valid*
+  field typed on the settings page (`save_valid_fields`: the client id/secret above all, but
+  nothing else is lost to the round-trip either — never the provider choice, though: connecting
+  isn't choosing) and redirects to Moloni; `DisconnectView` asks first (GET confirms, POST
+  disconnects — without a password it stops issuance); `CallbackView` sits on a **global** URL
   (`control/ptinvoicing/moloni/callback/`, no event in the path) because Moloni may require an
   exact `redirect_uri` match — the event and a `state` value travel in the session instead.
   `state` is checked when Moloni echoes it; when it doesn't (undocumented either way), the
   one-shot session entry is the CSRF guard. Both of those are **still unconfirmed against a
   real Moloni account**. The settings page shows the state through the provider's
-  `settings_template` (`moloni_connection.html`), with buttons using `formaction` since they
-  live inside the settings `<form>`.
+  `settings_template` (`moloni_connection.html`), with Connect using `formaction` since it
+  lives inside the settings `<form>`. Connecting doesn't make Moloni the event's provider, and the
+  company/series dropdowns only fill in once connected, so issuance waits on a Save that's easy
+  to miss: until `MoloniProvider.in_use` (saved as the provider *and* `is_configured`), the block
+  says so and the callback's success message repeats it. The redirect URI has a copy button
+  (`.ptinvoicing-copy`, wired up in `settings.js`).
+  The expiry e-mail is sent **only by the daily keepalive**: an issuance that finds the
+  connection dead records an error row, but neither marks it expired nor e-mails.
   The refresh token lasts 14 days, so `signals.py`'s `ptinvoicing_keepalive` (`periodic_task`,
   `minimum_interval` daily) calls every selected provider's `keepalive()`; Moloni's rotates the
   refresh token. Only a refusal *from Moloni* (`MoloniAPIError` with `detail`) with no password
   to fall back to marks `moloni_connection_expired` and e-mails the event's `contact_mail`; a
-  network failure just waits for tomorrow's run.
+  network failure (`ProviderUnreachable`) just waits for tomorrow's run.
+  **Concurrent refreshes**: rotation spends the old refresh token, so when two workers (or the
+  keepalive and an issuance) refresh at once the loser gets refused. Before treating that as a
+  dead connection, `MoloniClient.adopt_rotated()` re-reads the stored pair (`reload_tokens`,
+  bypassing the settings cache with `flush()`) and adopts it if another worker rotated it.
 - `payload.py` — `customers/insert` shape plus the document's `products`/`payments` arrays, and
   `creditNotes/insert`'s shape (see "Credit notes" below). The customer is a separate object: Moloni
   takes only `customer_id`, there is no inline client block.
 - Every document line needs a `product_id` — Moloni only invoices **catalog products**
   (`invoiceReceipts/insert` rejected lines without one), where Fact.pt takes lines inline.
   `MoloniProvider._resolve_product_ids` gives each pretix item one, by reference
-  `pretix-item-<item.pk>`: `products/getByReference` (exact), else `products/insert` — the
+  `pretix-item-<item.pk>` — and each fee type one, `pretix-fee-<fee_type>` (keyed on
+  `Line.catalog_key`): `products/getByReference` (exact; a failed lookup raises rather than
+  inserting a duplicate), else `products/insert` — the
   official WooCommerce plugin's approach. Created with the event's `moloni_product_category_id`
   (top-level categories only in the dropdown), `moloni_product_type` (service/product) and
   `moloni_unit_id`, plus the tax/exemption settings; `products/insert` wants the tax's rate
@@ -635,6 +715,12 @@ real account.
   required setting, a real id) and `payment_method_id` (reuses the document's), and a **real
   account rejected** the absence of `salesman_id`/`payment_day`/`discount`/`credit_limit`/
   `delivery_method_id` even though the docs mark them optional — `build_customer` sends 0 for each.
+  `_resolve_customer_id` always looks the buyer up with `customers/getByVat` first, and a failed
+  lookup raises instead of falling through to insert. With a NIF: one match is reused, several
+  stop issuance ("merge them in Moloni") — inserting another would only add to the duplicates.
+  Without one: the lowest-id 999999990 customer with the same name is reused, Fact.pt's
+  final-consumer approach, so buyers don't each get a new customer. `country_id` comes from
+  `countries/getAll` by ISO code for anyone outside Portugal — never defaulted to Portugal.
   Its `lookups()` returns the company list plus tax exemptions (global), and once a company is set,
   both document sets, tax, payment method and maturity date — same `{field: [{id, label}]}`
   contract.
@@ -751,10 +837,9 @@ These were checked against a real Fact.pt **sandbox** account, not inferred from
    original `provider`, and `DownloadView` 404s for rows whose provider is no longer the event's
    current one — the old provider's credentials aren't kept around to fetch the PDF.
 10. **Partial refunds have no credit-note representation.** Both providers only support crediting a
-    document's full value (Fact.pt says so explicitly; Moloni's `creditNotes/insert` reconciles
-    against `associated_documents`, which this plugin always sends as the original's full
-    `gross_value`). `ptinvoicing_refund_done` (see "Credit notes" above) only auto-issues once
-    `order.payment_refund_sum` reaches zero, i.e. once refunds have accumulated to the full amount —
+    document's full value (Fact.pt says so explicitly; Moloni's `creditNotes/insert` credits every
+    line `getUnrelatedProducts` returns). `ptinvoicing_refund_done` (see "Credit notes" above) only
+    auto-issues once done refunds add up to everything paid —
     a single partial refund leaves an order with no provider-side credit-note document, silently, by
     design, until either a later refund completes it or the admin issues one by hand from the
     Control panel. The admin has to judge whether a full credit note (crediting more than was
@@ -762,6 +847,10 @@ These were checked against a real Fact.pt **sandbox** account, not inferred from
     rough edge #1's tax-mismatch stance: fail visibly rather than issue something wrong silently. A
     future fix would need pretix-tax-rule-style partial support from the providers themselves, which
     Fact.pt's API v1.0.0 doesn't offer.
+11. **A Fact.pt document created by a call that then timed out isn't linked back.** The retry is
+    rejected as a duplicate `identifierId` — so no second invoice, which is the point — but the
+    row stays `error` with no `document_id`, and the admin has to find the document in Fact.pt.
+    Recovering it needs a lookup by `identifierId`, and no such endpoint is documented.
 
 ## Commands
 

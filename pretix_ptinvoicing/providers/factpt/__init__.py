@@ -5,8 +5,13 @@ from django import forms
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
 
-from ...orderdata import bare_tin, client_name
-from ..base import InvoiceProvider, IssuedDocument, ProviderError
+from ...orderdata import bare_tin, client_name, invoice_lines
+from ..base import (
+    InvoiceProvider,
+    IssuedDocument,
+    ProviderError,
+    ProviderUnreachable,
+)
 from .client import FactptAPIError, FactptClient
 from .payload import build_credit_payload, build_payload
 
@@ -98,7 +103,7 @@ class FactptProvider(InvoiceProvider):
         name = client_name(order)
         try:
             matches = client.search_clients(tin or name)
-        except FactptAPIError:
+        except (FactptAPIError, ProviderUnreachable):
             # A failed search is not fatal — fall back to inline client creation.
             return None
 
@@ -141,8 +146,8 @@ class FactptProvider(InvoiceProvider):
             )
 
         configured = Decimal(str(rate.get("value")))
-        for position in order.positions.all():
-            if position.tax_rate != configured:
+        for line in invoice_lines(order):
+            if line.tax_rate != configured:
                 raise ProviderError(
                     _(
                         "VAT mismatch: pretix charged %(pretix)s%% on this order but the "
@@ -151,7 +156,7 @@ class FactptProvider(InvoiceProvider):
                         "or the Fact.pt VAT rate setting."
                     )
                     % {
-                        "pretix": position.tax_rate,
+                        "pretix": line.tax_rate,
                         "factpt": configured,
                         "label": _describe_tax(rate),
                     }
@@ -193,7 +198,7 @@ class FactptProvider(InvoiceProvider):
             return None
         try:
             data = self._client().get_document(document_id).get("data") or {}
-        except FactptAPIError:
+        except (FactptAPIError, ProviderUnreachable):
             logger.warning("factpt: could not read number of document %s", document_id)
             return None
         return data.get("number") or None

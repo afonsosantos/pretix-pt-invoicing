@@ -1,6 +1,6 @@
 from django.utils import timezone
 
-from ...orderdata import bare_tin, client_name, one_line
+from ...orderdata import bare_tin, client_name, invoice_lines, one_line
 
 # Fact.pt's documented limits for the client block. Every one of these is a single line:
 # pretix's street is a TextField, so a buyer pressing Enter would otherwise send a newline
@@ -66,25 +66,26 @@ def build_items_block(order, event_settings):
     )
     default_type = event_settings.get("factpt_default_type", default="service")
 
-    items = []
-    for position in order.positions.all():
-        items.append(
-            {
-                "description": str(position.item.name)[:150],
-                # Fact.pt's `price` is the NET unit price: it adds taxId's VAT on top
-                # (verified against the sandbox — 15.00 at 23% came back as gross 18.45).
-                # pretix's position.price is gross, so the tax has to come back out, or
-                # every invoice would be issued above what the buyer actually paid.
-                "price": str(position.price - position.tax_value),
-                "reference": f"pretix-{position.pk}"[:20],
-                "retention": False,
-                "type": default_type,
-                "unitId": default_unit_id,
-                "taxId": default_tax_id,
-                "quantity": 1,
-            }
-        )
-    return items
+    return [
+        {
+            "description": line.name[:150],
+            # Fact.pt's `price` is the NET unit price: it adds taxId's VAT on top
+            # (verified against the sandbox — 15.00 at 23% came back as gross 18.45).
+            # pretix's prices are gross, so the tax has to come back out — see Line.net
+            # for why that's done from the rate rather than with pretix's rounded
+            # tax_value.
+            # ponytail: 4-decimal net is unverified against Fact.pt; confirm with one
+            # sandbox document at 15.00/23% that it comes back as gross 15.00.
+            "price": str(line.net),
+            "reference": line.reference[:20],
+            "retention": False,
+            "type": default_type,
+            "unitId": default_unit_id,
+            "taxId": default_tax_id,
+            "quantity": 1,
+        }
+        for line in invoice_lines(order)
+    ]
 
 
 def build_payload(order, event_settings, identifier_id, client_id=None):
