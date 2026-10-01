@@ -1,0 +1,62 @@
+.ptinvoicing-provider-cards {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.ptinvoicing-provider-card {
+    position: relative;
+    margin: 0;
+    font-weight: normal;
+    cursor: pointer;
+}
+
+/* Visually hidden but still focusable and keyboard-operable. */
+.ptinvoicing-provider-card input {
+    position: absolute;
+    opacity: 0;
+}
+
+.ptinvoicing-provider-card-body {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 180px;
+    height: 80px;
+    padding: 12px 28px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    background: #fff;
+    color: #555;
+    text-align: center;
+}
+
+.ptinvoicing-provider-card-body img {
+    max-width: 100%;
+    max-height: 32px;
+}
+
+.ptinvoicing-provider-card-check {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    color: #ddd;
+}
+
+.ptinvoicing-provider-card:hover .ptinvoicing-provider-card-body {
+    border-color: #bbb;
+}
+
+.ptinvoicing-provider-card input:checked + .ptinvoicing-provider-card-body {
+    border-color: #7f5a91;
+}
+
+.ptinvoicing-provider-card input:checked + .ptinvoicing-provider-card-body .ptinvoicing-provider-card-check {
+    color: #7f5a91;
+}
+
+.ptinvoicing-provider-card input:focus-visible + .ptinvoicing-provider-card-body {
+    outline: 2px solid #7f5a91;
+    outline-offset: 2px;
+}

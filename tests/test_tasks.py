@@ -16,6 +16,11 @@ from pretix_ptinvoicing.tasks import issue_credit_note, issue_invoice
 from tests.conftest import mock_factpt_taxes
 
 
+def last_post():
+    # The issuing request; issuance ends with a GET for the document's number.
+    return [c for c in responses.calls if c.request.method == "POST"][-1]
+
+
 @pytest.mark.django_db
 def test_no_provider_configured_skips_silently(order, event):
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
@@ -46,6 +51,18 @@ def test_successful_issuance_creates_invoice(order, event, position):
         },
         status=200,
     )
+    # Shape verified on a real account: number is "<series>/<n>", type a word.
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/12345",
+        json={
+            "AppStatusCode": 200,
+            "AppResponse": {
+                "data": {"id": 12345, "number": "2025QG/9", "type": "invoicereceipt"}
+            },
+        },
+        status=200,
+    )
 
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
@@ -53,7 +70,45 @@ def test_successful_issuance_creates_invoice(order, event, position):
         invoice = IssuedInvoice.objects.get(order=order)
     assert invoice.status == IssuedInvoice.STATUS_SUCCESS
     assert invoice.document_id == "12345"
+    # As Fact.pt returns it — no type mapping.
+    assert invoice.document_number == "2025QG/9"
+    assert invoice.display_number == "2025QG/9"
     assert invoice.document_link == "https://fact.pt/doc/12345"
+    assert invoice.attempts == 1
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_failed_number_lookup_keeps_the_issuance_successful(order, event, position):
+    # The document already exists by then: a failed lookup must not turn it into an
+    # error (or a retry). The id is shown instead.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json={"AppStatusCode": 200, "AppResponse": {"data": {"id": "12345"}}},
+        status=200,
+    )
+    responses.add(
+        responses.GET,
+        "https://api.fact.pt/documents/12345",
+        json={"AppStatusCode": 500, "AppResponse": {}},
+        status=500,
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_SUCCESS
+    assert invoice.document_number is None
+    assert invoice.display_number == "12345"
     assert invoice.attempts == 1
 
 
@@ -118,7 +173,7 @@ def test_uses_existing_client_id_when_search_finds_one_match(order, event, posit
 
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
-    sent = json.loads(responses.calls[-1].request.body)
+    sent = json.loads(last_post().request.body)
     assert sent["client"] == {"id": "77"}
 
 
@@ -160,7 +215,7 @@ def test_falls_back_to_inline_client_when_search_finds_multiple_matches(
 
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
-    sent = json.loads(responses.calls[-1].request.body)
+    sent = json.loads(last_post().request.body)
     assert sent["client"]["tin"] == "123456789"
     assert "id" not in sent["client"]
 
@@ -200,10 +255,8 @@ def test_credit_note_through_factpt_hits_the_documents_credit_endpoint(
     )
     issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
-    assert (
-        responses.calls[-1].request.url == "https://api.fact.pt/documents/12345/credit"
-    )
-    sent = json.loads(responses.calls[-1].request.body)
+    assert last_post().request.url == "https://api.fact.pt/documents/12345/credit"
+    sent = json.loads(last_post().request.body)
     assert sent["document"]["identifierId"] == "pretix-dummy-FOOBAR-credit"
 
     with scopes_disabled():
@@ -475,7 +528,7 @@ def test_final_consumer_reuses_an_existing_client_instead_of_duplicating(
 
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
-    sent = json.loads(responses.calls[-1].request.body)
+    sent = json.loads(last_post().request.body)
     # Lowest id, so repeated issuance is deterministic rather than picking a new duplicate.
     assert sent["client"] == {"id": 9985}
 
@@ -689,6 +742,41 @@ def test_core_issues_through_any_provider(order, event, position, dummy_provider
     assert invoice.document_id == "DUMMY-1"
     assert invoice.document_link == "https://example.org/d/1"
     assert dummy_provider.issued == [(order.code, "pretix-dummy-FOOBAR")]
+
+
+@pytest.mark.django_db
+def test_paid_again_after_a_credited_refund_issues_a_new_invoice(
+    order, event, position, dummy_provider
+):
+    # Paid → invoiced → refunded → credited → paid again: the order needs a second
+    # invoice under a new key, and a later refund credits that one, not the first.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+    # A duplicate order_paid within the same cycle still issues nothing new.
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+    issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.issued == [
+        (order.code, "pretix-dummy-FOOBAR"),
+        (order.code, "pretix-dummy-FOOBAR-r1"),
+    ]
+    assert [c[2] for c in dummy_provider.credited] == [
+        "pretix-dummy-FOOBAR-credit",
+        "pretix-dummy-FOOBAR-r1-credit",
+    ]
+    with scopes_disabled():
+        second = IssuedInvoice.objects.get(identifier_id="pretix-dummy-FOOBAR-r1")
+        credits = IssuedInvoice.objects.get(
+            identifier_id="pretix-dummy-FOOBAR-r1-credit"
+        )
+    assert credits.credits == second
 
 
 @pytest.mark.django_db

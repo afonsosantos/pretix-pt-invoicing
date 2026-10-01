@@ -1,6 +1,8 @@
 import logging
 
+from django.conf import settings
 from django.core.files.base import ContentFile
+from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from i18nfield.strings import LazyI18nString
 from pretix.base.models import CachedFile
@@ -63,6 +65,47 @@ def send_invoice_email(order, provider, invoice):
         ),
         filename=f"{order.code}.pdf",
     )
+
+
+def send_connection_expired_email(event, provider):
+    """Tell the organizer a provider connection died; issuance stops until reconnected."""
+    recipient = event.settings.get("contact_mail")
+    if not recipient:
+        logger.warning(
+            "ptinvoicing: %s connection expired for %s, and no contact e-mail is set",
+            provider.verbose_name,
+            event,
+        )
+        return
+    settings_url = settings.SITE_URL + reverse(
+        "plugins:pretix_ptinvoicing:settings",
+        kwargs={"organizer": event.organizer.slug, "event": event.slug},
+    )
+    try:
+        mail(
+            recipient,
+            LazyI18nString.from_gettext(
+                _("Invoicing for {event}: the {provider} connection has expired")
+            ),
+            LazyI18nString.from_gettext(
+                _(
+                    "Hello,\n\n"
+                    "the connection between {event} and {provider} has expired, so no "
+                    "invoices will be issued until you connect again here:\n\n"
+                    "{url}\n"
+                )
+            ),
+            {
+                "event": str(event.name),
+                "provider": provider.verbose_name,
+                "url": settings_url,
+            },
+            event=event,
+        )
+    except Exception:
+        logger.exception(
+            "ptinvoicing: could not e-mail the expiry notice for %s", event
+        )
 
 
 def send_credit_note_email(order, provider, credit_note):

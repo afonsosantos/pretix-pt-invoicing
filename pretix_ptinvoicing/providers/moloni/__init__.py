@@ -1,4 +1,6 @@
+import logging
 import random
+from decimal import Decimal
 
 import requests
 from django import forms
@@ -9,9 +11,18 @@ from pretix.base.forms import SettingsForm
 from ...orderdata import bare_tin
 from ..base import InvoiceProvider, IssuedDocument, ProviderError
 from .client import MoloniAPIError, MoloniClient
-from .payload import build_credit_note, build_customer, build_document
+from .payload import (
+    build_catalog_product,
+    build_credit_note,
+    build_customer,
+    build_document,
+)
 
 __all__ = ["MoloniAPIError", "MoloniClient", "MoloniProvider", "MoloniSettingsForm"]
+
+logger = logging.getLogger(__name__)
+
+DOWNLOAD_URL = "https://www.moloni.pt/downloads/index.php"
 
 
 class MoloniSettingsForm(SettingsForm):
@@ -19,9 +30,17 @@ class MoloniSettingsForm(SettingsForm):
     moloni_client_secret = forms.CharField(
         label=_("Client secret"), widget=forms.PasswordInput(render_value=True)
     )
-    moloni_username = forms.CharField(label=_("Moloni username"))
+    # Optional since "Connect to Moloni" (authorization-code grant) needs no password.
+    # Kept as an alternative: with them, an expired connection heals itself.
+    moloni_username = forms.CharField(
+        label=_("Moloni username"),
+        required=False,
+        help_text=_('Only needed if you don\'t use "Connect to Moloni".'),
+    )
     moloni_password = forms.CharField(
-        label=_("Moloni password"), widget=forms.PasswordInput(render_value=True)
+        label=_("Moloni password"),
+        required=False,
+        widget=forms.PasswordInput(render_value=True),
     )
     moloni_company_id = forms.IntegerField(
         label=_("Company (Moloni)"),
@@ -41,13 +60,38 @@ class MoloniSettingsForm(SettingsForm):
     moloni_exemption_reason = forms.CharField(
         label=_("Exemption reason"),
         required=False,
-        help_text=_('Required on 0% lines, e.g. "M07" for Artigo 9.º do CIVA.'),
+        help_text=_(
+            "Required on 0% lines. Lists Moloni's exemption codes once connected."
+        ),
     )
     moloni_payment_method_id = forms.IntegerField(
         label=_("Payment method (Moloni)"),
         help_text=_(
             "An invoice-receipt is one of Moloni's self-paid document types and always "
             "carries a payment; this is the method it's recorded under."
+        ),
+    )
+    # Moloni only invoices catalog products, so each pretix item gets one, created on
+    # its first sale — these are what it's created with (like Fact.pt's item defaults).
+    moloni_product_category_id = forms.IntegerField(
+        label=_("Product category (Moloni)"),
+        help_text=_(
+            "Each pretix product is created in Moloni's catalog on its first sale, "
+            "in this category."
+        ),
+    )
+    moloni_product_type = forms.TypedChoiceField(
+        label=_("Product type (Moloni)"),
+        coerce=int,
+        initial=2,
+        choices=[(2, _("Service")), (1, _("Product"))],
+    )
+    moloni_unit_id = forms.IntegerField(label=_("Unit (Moloni)"))
+    moloni_maturity_date_id = forms.IntegerField(
+        label=_("Maturity date (Moloni)"),
+        help_text=_(
+            "Moloni requires one on every new customer it creates for a buyer, e.g. "
+            '"Pronto pagamento".'
         ),
     )
 
@@ -62,28 +106,97 @@ class MoloniProvider(InvoiceProvider):
     # second official invoice, so the core must not retry on its own.
     deduplicates_issuance = False
 
+    settings_template = "pretix_ptinvoicing/control/moloni_connection.html"
+    logo = "pretix_ptinvoicing/logos/moloni.svg"
+    lookup_triggers = ("moloni_company_id",)
+
     @property
     def is_configured(self):
-        return all(
+        return self._has_login() and all(
             self.settings.get(k)
             for k in (
                 "moloni_client_id",
                 "moloni_client_secret",
-                "moloni_username",
-                "moloni_password",
                 "moloni_company_id",
                 "moloni_document_set_id",
                 "moloni_credit_note_document_set_id",
                 "moloni_payment_method_id",
+                "moloni_maturity_date_id",
+                "moloni_product_category_id",
+                "moloni_unit_id",
             )
         )
 
+    def _has_password(self):
+        return bool(
+            self.settings.get("moloni_username")
+            and self.settings.get("moloni_password")
+        )
+
+    def _has_login(self):
+        return self._has_password() or self.connection_state == "connected"
+
+    @property
+    def connection_state(self):
+        """'connected', 'expired' or None — the "Connect to Moloni" flow's state."""
+        if self.settings.get("moloni_connection_expired", as_type=bool, default=False):
+            return "expired"
+        if self.settings.get("moloni_refresh_token"):
+            return "connected"
+        return None
+
+    @property
+    def redirect_uri(self):
+        # Shown on the settings page: it's what the admin registers in Moloni.
+        from .views import callback_url
+
+        return callback_url()
+
     def _store_token(self, access_token, refresh_token, expires_at):
         # self.settings is writable, which is what makes OAuth workable here: without
-        # caching, every issuance would burn a fresh password grant.
+        # caching, every issuance would burn a fresh grant.
         self.settings.set("moloni_access_token", access_token)
         self.settings.set("moloni_refresh_token", refresh_token or "")
         self.settings.set("moloni_token_expires", str(expires_at))
+        self.settings.delete("moloni_connection_expired")
+
+    def hidden_settings_fields(self):
+        if self.connection_state == "connected":
+            return ("moloni_username", "moloni_password")
+        return ()
+
+    def disconnect(self):
+        for key in (
+            "moloni_access_token",
+            "moloni_refresh_token",
+            "moloni_token_expires",
+            "moloni_connection_expired",
+        ):
+            self.settings.delete(key)
+
+    def connect(self, code, redirect_uri):
+        self._client().exchange_code(code, redirect_uri)
+
+    def keepalive(self):
+        """
+        Rotate the refresh token so it never reaches its 14-day expiry, however long the
+        event goes without a sale. Called daily from the periodic_task receiver.
+
+        Returns True when the connection has just been found dead — Moloni itself refused
+        the refresh and there's no password to fall back to. A network failure isn't
+        that: tomorrow's run tries again, with days of slack before the token expires.
+        """
+        if self.connection_state != "connected":
+            return False
+        try:
+            self._client().refresh()
+        except MoloniAPIError as e:
+            if not e.detail or self._has_password():
+                logger.warning("moloni: keepalive refresh failed for %s", self.event)
+                return False
+            self.settings.set("moloni_connection_expired", True)
+            return True
+        return False
 
     def _client(self):
         return MoloniClient(
@@ -121,6 +234,10 @@ class MoloniProvider(InvoiceProvider):
         )
         customer = build_customer(
             order,
+            payment_method_id=self.settings.get(
+                "moloni_payment_method_id", as_type=int
+            ),
+            maturity_date_id=self.settings.get("moloni_maturity_date_id", as_type=int),
             custom_field_is_nif=self.settings.get(
                 "ptinvoicing_nif_custom_field", as_type=bool, default=False
             ),
@@ -152,14 +269,113 @@ class MoloniProvider(InvoiceProvider):
             raise MoloniAPIError(_("Moloni did not return a customer id."))
         return customer_id
 
+    def _resolve_product_ids(self, client, order, company_id, tax_rate):
+        """
+        {pretix item pk: Moloni product_id} for the order's lines.
+
+        Moloni only invoices catalog products, so each pretix item gets one, keyed by
+        reference `pretix-item-<pk>`: found if it already exists, created otherwise (the
+        official WooCommerce plugin does the same). Item pks are unique across the whole
+        pretix install, so events sharing a Moloni company don't collide.
+        """
+        product_ids = {}
+        for position in order.positions.all():
+            item = position.item
+            if item.pk in product_ids:
+                continue
+            reference = f"pretix-item-{item.pk}"
+            try:
+                found = client.call(
+                    "products/getByReference",
+                    {"company_id": company_id, "reference": reference, "exact": 1},
+                )
+            except MoloniAPIError:
+                found = []
+            matches = [p for p in found or [] if p.get("reference") == reference]
+            if matches:
+                product_ids[item.pk] = matches[0]["product_id"]
+                continue
+
+            created = client.call(
+                "products/insert",
+                build_catalog_product(
+                    position,
+                    reference,
+                    self.settings,
+                    company_id,
+                    tax_rate,
+                ),
+            )
+            product_id = (created or {}).get("product_id")
+            if not product_id:
+                raise MoloniAPIError(_("Moloni did not return a product id."))
+            product_ids[item.pk] = product_id
+        return product_ids
+
+    def _check_taxes(self, client, order, company_id):
+        """
+        Refuse to issue unless every line's tax can be stated truthfully; return the
+        configured tax's rate (None when no line is taxed).
+
+        Lines carry the rate pretix charged (payload.line_tax): 0% lines need an
+        exemption reason, taxed lines the configured Moloni tax at the *same* rate —
+        `price` is sent net and Moloni adds its rate back, so a mismatch would invoice a
+        different amount than the buyer paid. Same guard as Fact.pt's
+        _check_tax_rate_matches. Runs before anything is created in Moloni.
+        """
+        positions = list(order.positions.all())
+        if any(not p.tax_rate for p in positions) and not self.settings.get(
+            "moloni_exemption_reason"
+        ):
+            raise MoloniAPIError(
+                _(
+                    "This order has 0% VAT lines, which Moloni only accepts with an "
+                    "exemption reason. Set one in the invoicing settings."
+                )
+            )
+        taxed = [p for p in positions if p.tax_rate]
+        if not taxed:
+            return None
+
+        tax_id = self.settings.get("moloni_tax_id", as_type=int)
+        rate = None
+        for tax in client.call("taxes/getAll", {"company_id": company_id}) or []:
+            if tax.get("tax_id") == tax_id:
+                rate = Decimal(str(tax.get("value")))
+        if rate is None:
+            raise MoloniAPIError(
+                _("VAT rate %(id)s does not exist in this Moloni company.")
+                % {"id": tax_id}
+            )
+        for position in taxed:
+            if position.tax_rate != rate:
+                raise MoloniAPIError(
+                    _(
+                        "VAT mismatch: pretix charged %(pretix)s%% on this order but the "
+                        "configured Moloni rate is %(moloni)s%%. The invoice would be "
+                        "issued for the wrong amount. Fix the event's tax rule or the "
+                        "Moloni VAT rate setting."
+                    )
+                    % {"pretix": position.tax_rate, "moloni": rate}
+                )
+        return rate
+
     def issue(self, order, identifier_id):
         client = self._client()
         company_id = self.settings.get("moloni_company_id", as_type=int)
         date = timezone.now().date().isoformat()
 
+        tax_rate = self._check_taxes(client, order, company_id)
         customer_id = self._resolve_customer_id(client, order, company_id)
+        product_ids = self._resolve_product_ids(client, order, company_id, tax_rate)
         document = build_document(
-            order, self.settings, customer_id, identifier_id, date
+            order,
+            self.settings,
+            customer_id,
+            identifier_id,
+            date,
+            product_ids,
+            tax_rate,
         )
         result = client.call("invoiceReceipts/insert", document)
 
@@ -173,6 +389,7 @@ class MoloniProvider(InvoiceProvider):
             document_id=str(document_id),
             link=None,
             permanent_url=(result or {}).get("public_link"),
+            number=self.document_number(document_id),
         )
 
     def credit(self, order, document_id, identifier_id):
@@ -215,7 +432,33 @@ class MoloniProvider(InvoiceProvider):
                 _("Moloni did not return a credit note id."),
                 detail=result if isinstance(result, dict) else None,
             )
-        return IssuedDocument(document_id=str(credit_id), link=None, permanent_url=None)
+        return IssuedDocument(
+            document_id=str(credit_id),
+            link=None,
+            permanent_url=None,
+            number=self.document_number(credit_id),
+        )
+
+    def document_number(self, document_id):
+        # documents/getOne carries the pieces: document_type.saft_code ("FR"/"NC"),
+        # document_set_name ("M2026") and number (20) — verified on a real account.
+        try:
+            document = self._client().call(
+                "documents/getOne",
+                {
+                    "company_id": self.settings.get("moloni_company_id", as_type=int),
+                    "document_id": int(document_id),
+                },
+            )
+        except MoloniAPIError:
+            logger.warning("moloni: could not read number of document %s", document_id)
+            return None
+        if not isinstance(document, dict) or not document.get("number"):
+            return None
+        code = (document.get("document_type") or {}).get("saft_code")
+        series = document.get("document_set_name")
+        number = document["number"]
+        return f"{code} {series}/{number}" if code and series else str(number)
 
     def download(self, document_id):
         client = self._client()
@@ -227,17 +470,26 @@ class MoloniProvider(InvoiceProvider):
             },
         )
         url = (link or {}).get("url") if isinstance(link, dict) else None
-        if not url:
+        if not url or "?" not in url:
             raise MoloniAPIError(_("Moloni did not return a PDF link."))
 
+        # getPDFLink's URL opens Moloni's HTML download *page*, not the file. The file
+        # itself is the same query on the getDownload action — what the official
+        # WooCommerce plugin's DownloadDocument.php does.
+        query = url.split("?", 1)[1]
         try:
-            response = requests.get(url, timeout=20)
+            response = requests.get(
+                f"{DOWNLOAD_URL}?action=getDownload&{query}", timeout=20
+            )
             response.raise_for_status()
         except requests.RequestException as e:
             raise MoloniAPIError(
                 _("Could not download the document from Moloni: %(error)s")
                 % {"error": e}
             )
+        # Never hand anything else to the browser as application/pdf.
+        if not response.content.startswith(b"%PDF"):
+            raise MoloniAPIError(_("Moloni did not return a PDF."))
         return response.content
 
     def lookups(self, data):
@@ -246,36 +498,59 @@ class MoloniProvider(InvoiceProvider):
         against credentials the admin hasn't saved yet, using the same
         {field: [{id, label}]} contract as any other provider's lookups().
         """
-        missing = [
-            k
+        typed = {
+            k: (data.get(k) or "").strip()
             for k in (
                 "moloni_client_id",
                 "moloni_client_secret",
                 "moloni_username",
                 "moloni_password",
             )
-            if not (data.get(k) or "").strip()
-        ]
-        if missing:
-            raise ProviderError(_("Fill in the Moloni credentials first."))
-
-        client = MoloniClient(
-            client_id=data["moloni_client_id"].strip(),
-            client_secret=data["moloni_client_secret"].strip(),
-            username=data["moloni_username"].strip(),
-            password=data["moloni_password"].strip(),
-        )
+        }
+        if all(typed.values()):
+            client = MoloniClient(
+                client_id=typed["moloni_client_id"],
+                client_secret=typed["moloni_client_secret"],
+                username=typed["moloni_username"],
+                password=typed["moloni_password"],
+            )
+        elif self.connection_state == "connected":
+            # Connected through OAuth: the stored tokens work without a password.
+            client = self._client()
+        else:
+            raise ProviderError(
+                _("Connect to Moloni, or fill in the Moloni credentials, first.")
+            )
 
         companies = client.call("companies/getAll") or []
-        fields = {
-            "moloni_company_id": [
-                {
-                    "id": c.get("company_id"),
-                    "label": c.get("name") or c.get("company_id"),
-                }
-                for c in companies
+        company_options = [
+            {
+                "id": c.get("company_id"),
+                "label": " — ".join(str(v) for v in (c.get("name"), c.get("vat")) if v)
+                or c.get("company_id"),
+            }
+            for c in companies
+        ]
+        # A multi-company account must pick one explicitly: defaulting to the first
+        # would quietly issue official invoices under the wrong company. The blank
+        # option fails the required field on Save until a real one is chosen.
+        if len(company_options) > 1:
+            company_options.insert(
+                0, {"id": "", "label": str(_("— choose a company —"))}
+            )
+        fields = {"moloni_company_id": company_options}
+
+        # Global data, not per company. The stored value is the code itself ("M07"),
+        # so existing settings keep matching an option.
+        try:
+            exemptions = client.call("taxExemptions/getAll") or []
+        except MoloniAPIError:
+            exemptions = []
+        if exemptions:
+            fields["moloni_exemption_reason"] = [{"id": "", "label": "—"}] + [
+                {"id": e.get("code"), "label": f"{e.get('code')} — {e.get('name')}"}
+                for e in exemptions
             ]
-        }
 
         company_id = (data.get("moloni_company_id") or "").strip()
         if not company_id:
@@ -304,9 +579,25 @@ class MoloniProvider(InvoiceProvider):
                 "payment_method_id",
                 "name",
             ),
+            (
+                "moloni_maturity_date_id",
+                "maturityDates/getAll",
+                "maturity_date_id",
+                "name",
+            ),
+            (
+                "moloni_product_category_id",
+                "productCategories/getAll",
+                "category_id",
+                "name",
+            ),
+            ("moloni_unit_id", "measurementUnits/getAll", "unit_id", "name"),
         ):
+            # ponytail: top-level categories only (parent_id 0); walk the tree if
+            # someone needs to file tickets under a subcategory.
+            extra = {"parent_id": 0} if endpoint == "productCategories/getAll" else {}
             try:
-                rows = client.call(endpoint, payload) or []
+                rows = client.call(endpoint, {**payload, **extra}) or []
             except MoloniAPIError:
                 continue
             fields[field] = [

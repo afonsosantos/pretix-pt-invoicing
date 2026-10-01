@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-29 19:53+0100\n"
+"POT-Creation-Date: 2026-10-01 19:45+0100\n"
 "PO-Revision-Date: 2026-08-25 19:30+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -96,6 +96,26 @@ msgstr ""
 "\n"
 "Com os melhores cumprimentos,\n"
 "A equipa do {event}"
+
+#, python-brace-format
+msgid "Invoicing for {event}: the {provider} connection has expired"
+msgstr "Faturação de {event}: a ligação ao {provider} expirou"
+
+#, python-brace-format
+msgid ""
+"Hello,\n"
+"\n"
+"the connection between {event} and {provider} has expired, so no invoices "
+"will be issued until you connect again here:\n"
+"\n"
+"{url}\n"
+msgstr ""
+"Olá,\n"
+"\n"
+"a ligação entre {event} e {provider} expirou, pelo que não serão emitidas "
+"faturas até voltar a ligar aqui:\n"
+"\n"
+"{url}\n"
 
 #, python-brace-format
 msgid "Your credit note for order {code}"
@@ -231,6 +251,9 @@ msgstr "Segredo do cliente"
 msgid "Moloni username"
 msgstr "Utilizador Moloni"
 
+msgid "Only needed if you don't use \"Connect to Moloni\"."
+msgstr "Só é necessário se não usar \"Ligar ao Moloni\"."
+
 msgid "Moloni password"
 msgstr "Palavra-passe Moloni"
 
@@ -243,24 +266,90 @@ msgstr "Preenchido automaticamente quando as credenciais acima forem válidas."
 msgid "Document set (Moloni)"
 msgstr "Série de documentos (Moloni)"
 
+msgid "Credit note document set (Moloni)"
+msgstr "Série de notas de crédito (Moloni)"
+
+msgid ""
+"Must be a series created for the Credit Note document type in Moloni — it "
+"cannot be the same series as the invoice-receipt's."
+msgstr ""
+"Tem de ser uma série criada no Moloni para o tipo de documento Nota de "
+"Crédito — não pode ser a mesma série da fatura-recibo."
+
 msgid "VAT rate (Moloni)"
 msgstr "Taxa de IVA (Moloni)"
 
 msgid "Exemption reason"
 msgstr "Motivo de isenção"
 
-msgid "Required on 0% lines, e.g. \"M07\" for Artigo 9.º do CIVA."
+msgid "Required on 0% lines. Lists Moloni's exemption codes once connected."
 msgstr ""
-"Obrigatório nas linhas a 0%, por exemplo \"M07\" para o Artigo 9.º do CIVA."
+"Obrigatório em linhas a 0%. Mostra os códigos de isenção do Moloni depois de "
+"ligado."
 
 msgid "Payment method (Moloni)"
 msgstr "Forma de pagamento (Moloni)"
 
-msgid "Used for the receipt half of the invoice-receipt."
-msgstr "Usada na parte de recibo da fatura-recibo."
+msgid ""
+"An invoice-receipt is one of Moloni's self-paid document types and always "
+"carries a payment; this is the method it's recorded under."
+msgstr ""
+"A fatura-recibo é um dos documentos auto-liquidados do Moloni e leva sempre "
+"um pagamento; esta é a forma de pagamento com que fica registado."
+
+msgid "Product category (Moloni)"
+msgstr "Categoria de artigos (Moloni)"
+
+msgid ""
+"Each pretix product is created in Moloni's catalog on its first sale, in "
+"this category."
+msgstr ""
+"Cada produto do pretix é criado no catálogo do Moloni na sua primeira venda, "
+"nesta categoria."
+
+msgid "Product type (Moloni)"
+msgstr "Tipo de artigo (Moloni)"
+
+msgid "Unit (Moloni)"
+msgstr "Unidade (Moloni)"
+
+msgid "Maturity date (Moloni)"
+msgstr "Prazo de vencimento (Moloni)"
+
+msgid ""
+"Moloni requires one on every new customer it creates for a buyer, e.g. "
+"\"Pronto pagamento\"."
+msgstr ""
+"O Moloni exige um em cada novo cliente que cria para um comprador, por "
+"exemplo \"Pronto pagamento\"."
 
 msgid "Moloni did not return a customer id."
 msgstr "O Moloni não devolveu um id de cliente."
+
+msgid "Moloni did not return a product id."
+msgstr "O Moloni não devolveu um id de artigo."
+
+msgid ""
+"This order has 0% VAT lines, which Moloni only accepts with an exemption "
+"reason. Set one in the invoicing settings."
+msgstr ""
+"Esta encomenda tem linhas com IVA a 0%, que o Moloni só aceita com um motivo "
+"de isenção. Defina um nas definições de faturação."
+
+#, python-format
+msgid "VAT rate %(id)s does not exist in this Moloni company."
+msgstr "A taxa de IVA %(id)s não existe nesta empresa do Moloni."
+
+#, python-format
+msgid ""
+"VAT mismatch: pretix charged %(pretix)s%% on this order but the configured "
+"Moloni rate is %(moloni)s%%. The invoice would be issued for the wrong "
+"amount. Fix the event's tax rule or the Moloni VAT rate setting."
+msgstr ""
+"Divergência de IVA: o pretix cobrou %(pretix)s%% nesta encomenda mas a taxa "
+"configurada no Moloni é %(moloni)s%%. A fatura seria emitida com o valor "
+"errado. Corrija a regra de IVA do evento ou a definição da taxa de IVA do "
+"Moloni."
 
 msgid "Moloni did not return a document id."
 msgstr "O Moloni não devolveu um id de documento."
@@ -279,8 +368,14 @@ msgstr "O Moloni não devolveu uma ligação para o PDF."
 msgid "Could not download the document from Moloni: %(error)s"
 msgstr "Não foi possível descarregar o documento do Moloni: %(error)s"
 
-msgid "Fill in the Moloni credentials first."
-msgstr "Preencha primeiro as credenciais do Moloni."
+msgid "Moloni did not return a PDF."
+msgstr "O Moloni não devolveu um PDF."
+
+msgid "Connect to Moloni, or fill in the Moloni credentials, first."
+msgstr "Ligue primeiro ao Moloni ou preencha as credenciais do Moloni."
+
+msgid "— choose a company —"
+msgstr "— escolha uma empresa —"
 
 #, python-format
 msgid "Could not reach Moloni: %(error)s"
@@ -293,8 +388,12 @@ msgstr "Resposta inválida do Moloni (HTTP %(status)s)"
 msgid "Moloni refused the credentials."
 msgstr "O Moloni recusou as credenciais."
 
-msgid "Moloni credentials are incomplete."
-msgstr "As credenciais do Moloni estão incompletas."
+msgid ""
+"Not connected to Moloni, or the connection has expired. Connect again from "
+"the invoicing settings."
+msgstr ""
+"Sem ligação ao Moloni, ou a ligação expirou. Volte a ligar nas definições de "
+"faturação."
 
 msgid "Moloni rejected the request."
 msgstr "O Moloni rejeitou o pedido."
@@ -302,6 +401,22 @@ msgstr "O Moloni rejeitou o pedido."
 #, python-format
 msgid "Moloni returned HTTP %(status)s"
 msgstr "O Moloni devolveu HTTP %(status)s"
+
+msgid "Fill in the developer ID and client secret first."
+msgstr "Preencha primeiro o Developer ID e o segredo do cliente."
+
+msgid "Disconnected from Moloni."
+msgstr "Desligado do Moloni."
+
+msgid "Moloni did not authorize the connection."
+msgstr "O Moloni não autorizou a ligação."
+
+#, python-format
+msgid "Could not connect to Moloni: %(error)s"
+msgstr "Não foi possível ligar ao Moloni: %(error)s"
+
+msgid "Connected to Moloni."
+msgstr "Ligado ao Moloni."
 
 msgid "Invoicing (PT)"
 msgstr "Faturação PT"
@@ -339,6 +454,40 @@ msgstr "Tentar novamente"
 msgid "No invoices processed yet."
 msgstr "Ainda não há faturas processadas."
 
+msgid "Moloni connection"
+msgstr "Ligação ao Moloni"
+
+msgid "Connected"
+msgstr "Ligado"
+
+msgid ""
+"The connection to Moloni has expired. Invoices can't be issued until you "
+"connect again."
+msgstr ""
+"A ligação ao Moloni expirou. Não é possível emitir faturas até voltar a "
+"ligar."
+
+msgid "Not connected"
+msgstr "Não ligado"
+
+msgid "Reconnect to Moloni"
+msgstr "Voltar a ligar ao Moloni"
+
+msgid "Connect to Moloni"
+msgstr "Ligar ao Moloni"
+
+msgid "Disconnect"
+msgstr "Desligar"
+
+#, python-format
+msgid ""
+"Register <code>%(uri)s</code> as the redirect URI of your Moloni developer "
+"app. Once connected, no username or password is needed."
+msgstr ""
+"Registe <code>%(uri)s</code> como redirect URI da sua aplicação de "
+"programador no Moloni. Depois de ligado, o utilizador e a palavra-passe "
+"deixam de ser necessários."
+
 #, python-format
 msgid "Invoicing (PT) — %(provider)s"
 msgstr "Faturação PT — %(provider)s"
@@ -365,17 +514,20 @@ msgstr "Descarregar PDF"
 msgid "Retry issuance"
 msgstr "Reemitir"
 
-msgid "No invoice issued for this order yet."
-msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
-
-msgid "Issue invoice now"
-msgstr "Emitir fatura agora"
-
 msgid "Retry credit note"
 msgstr "Repetir nota de crédito"
 
 msgid "Issue credit note"
 msgstr "Emitir nota de crédito"
+
+msgid "Paid again after the last invoice was credited."
+msgstr "Paga novamente depois de a última fatura ter sido creditada."
+
+msgid "No invoice issued for this order yet."
+msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
+
+msgid "Issue invoice now"
+msgstr "Emitir fatura agora"
 
 msgid ""
 "Pick the invoicing provider to issue invoice-receipts with once payment is "
@@ -404,6 +556,28 @@ msgstr "Fornecedor de faturação desconhecido."
 
 msgid "Invoicing settings saved."
 msgstr "Definições de faturação guardadas."
+
+msgid "No invoicing"
+msgstr "Sem faturação"
+
+#~ msgid ""
+#~ "The Moloni catalog product every ticket line references, e.g. a "
+#~ "\"Bilhete\" service. Each line keeps its own pretix name and price."
+#~ msgstr ""
+#~ "O artigo do catálogo do Moloni referenciado por cada linha de bilhete, "
+#~ "por exemplo um serviço \"Bilhete\". Cada linha mantém o seu nome e preço "
+#~ "do pretix."
+
+#~ msgid "Required on 0% lines, e.g. \"M07\" for Artigo 9.º do CIVA."
+#~ msgstr ""
+#~ "Obrigatório nas linhas a 0%, por exemplo \"M07\" para o Artigo 9.º do "
+#~ "CIVA."
+
+#~ msgid "Used for the receipt half of the invoice-receipt."
+#~ msgstr "Usada na parte de recibo da fatura-recibo."
+
+#~ msgid "Moloni credentials are incomplete."
+#~ msgstr "As credenciais do Moloni estão incompletas."
 
 #~ msgid ""
 #~ "Fix the underlying data or settings first — the provider rejected this "

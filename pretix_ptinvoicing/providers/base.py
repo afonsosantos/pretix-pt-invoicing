@@ -30,6 +30,8 @@ class IssuedDocument:
     document_id: str = None
     link: str = None
     permanent_url: str = None
+    # The number people read, e.g. "FR M2026/20" — document_id is the API's internal key.
+    number: str = None
 
 
 class InvoiceProvider:
@@ -39,6 +41,15 @@ class InvoiceProvider:
     # must be namespaced by hand (e.g. factpt_token) — pretix stores event settings in one
     # flat namespace shared with core and every other plugin.
     settings_form_class = None
+    # Optional template rendered under the provider's fieldset on the settings page, with
+    # the provider instance as `provider` — for anything that isn't a form field (Moloni's
+    # "Connect" button and connection state).
+    settings_template = None
+    # Static path of the logo on the settings page's provider card; None shows the name.
+    logo = None
+    # lookups() fields whose value changes what lookups() returns (Moloni's company scopes
+    # its document sets, taxes and payment methods) — picking one re-runs the lookup.
+    lookup_triggers = ()
 
     # True when the provider itself refuses a second document for the same identifier_id
     # (Fact.pt does, via document.identifierId). That is what makes it safe for tasks.py to
@@ -87,6 +98,15 @@ class InvoiceProvider:
         """
         raise NotImplementedError
 
+    def document_number(self, document_id):
+        """
+        The document's human-readable number, built only from what the provider's API
+        returns (no mapping tables), or None. Called right after issuance, when the document already
+        exists — so it must never raise: a lookup failure has to leave a successful
+        issuance successful. Optional.
+        """
+        return
+
     def download(self, document_id):
         """Return the document's PDF bytes, or raise ProviderError."""
         raise NotImplementedError
@@ -99,3 +119,19 @@ class InvoiceProvider:
         whatever the admin has currently typed, not necessarily what's saved. Optional.
         """
         return {}
+
+    def hidden_settings_fields(self):
+        """
+        Settings form fields to leave off the settings page right now (Moloni's password
+        while connected via OAuth). Dropped from the form, not just hidden, so saving
+        leaves their stored values alone. Optional.
+        """
+        return ()
+
+    def keepalive(self):
+        """
+        Called about once a day for every event using this provider, e.g. to rotate an
+        expiring refresh token. Return True if the connection turned out to be dead, and
+        the organizer is e-mailed to reconnect. Optional.
+        """
+        return False
