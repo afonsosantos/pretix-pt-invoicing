@@ -1,4 +1,5 @@
 import re
+from unittest import mock
 
 import pytest
 import responses
@@ -29,6 +30,11 @@ def test_get_settings_page(logged_in_client, event):
     assert b"ptinvoicing_email_invoice" in response.content
     assert b"ptinvoicing_email_credit_note" in response.content
     assert b"ptinvoicing_show_in_order" in response.content
+    # On by default: an unticked box would turn automatic issuance off on the first Save.
+    auto = re.search(
+        rb'<input[^>]*name="ptinvoicing_auto_issue"[^>]*>', response.content
+    ).group(0)
+    assert b"checked" in auto
 
 
 @pytest.mark.django_db
@@ -57,6 +63,20 @@ def test_post_settings_page_saves(logged_in_client, event):
         assert (
             event.settings.get("ptinvoicing_email_credit_note", as_type=bool) is False
         )
+
+
+@pytest.mark.django_db
+def test_settings_page_asks_for_a_save_until_factpt_is_in_use(logged_in_client, event):
+    url = SETTINGS_URL.format(event.organizer.slug, event.slug)
+    # Chosen but without a token: still not in use.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+    assert "fill in the Fact.pt settings" in logged_in_client.get(url).content.decode()
+
+    with scopes_disabled():
+        event.settings.factpt_token = "tok"
+    content = logged_in_client.get(url).content.decode()
+    assert "fill in the Fact.pt settings" not in content
 
 
 @pytest.mark.django_db
@@ -373,23 +393,25 @@ def test_order_page_panel_offers_a_working_issue_button(
         plugin_enabled_event.slug,
         paid_order.code,
     )
-    assert issue_url in body
+    # A link to a confirmation page, not a direct POST: it issues a legal document.
+    link = re.search(rf'href="({re.escape(issue_url)}\?next=[^"]*)"', body)
+    assert link, "panel has no link to the confirmation page"
 
-    # The panel is rendered by a signal receiver, not a view, so its CSRF token only
-    # exists if the template was rendered with request= — without it {% csrf_token %}
-    # emits nothing and the button dies on CSRF verification. Scoped to this one form:
-    # the order page is full of other forms whose tokens would mask the bug.
-    at = body.index(issue_url)
-    panel_form = body[body.rindex("<form", 0, at) : body.index("</form>", at)]
-    token = re.search(r'name="csrfmiddlewaretoken" value="([^"]*)"', panel_form)
-    assert token and token.group(1), "panel form has no CSRF token"
+    confirm = logged_in_client.get(link.group(1).replace("&amp;", "&"))
+    assert confirm.status_code == 200
+    page = confirm.content.decode()
+    assert "cannot be undone" in page
+    token = re.search(r'name="csrfmiddlewaretoken" value="([^"]*)"', page)
+    assert token and token.group(1), "confirmation form has no CSRF token"
+    assert 'name="next" value="/control/event/' in page
 
-    with scopes_disabled():
-        plugin_enabled_event.settings.factpt_token = ""  # no HTTP call on this path
-    posted = logged_in_client.post(
-        issue_url, data={"csrfmiddlewaretoken": token.group(1), "next": "/control/"}
-    )
+    with mock.patch("pretix_ptinvoicing.views.issue_invoice") as task:
+        posted = logged_in_client.post(
+            issue_url, data={"csrfmiddlewaretoken": token.group(1), "next": "/control/"}
+        )
     assert posted.status_code == 302
+    assert posted["Location"] == "/control/"
+    task.apply_async.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -610,3 +632,167 @@ def test_order_page_panel_offers_a_new_invoice_after_a_credited_refund(
     assert "FR A/1" in body
     assert "NC A/1" in body
     assert "Issue invoice now" in body
+
+
+def _order_page(client, event, order):
+    return client.get(
+        f"/control/event/{event.organizer.slug}/{event.slug}/orders/{order.code}/"
+    ).content.decode()
+
+
+@pytest.mark.django_db
+def test_order_page_panel_hides_retry_while_an_attempt_is_in_flight(
+    logged_in_client, event, paid_order
+):
+    # Retrying while the first attempt runs could issue twice (Moloni can't dedupe).
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_PENDING,
+            attempts=1,
+        )
+
+    body = _order_page(logged_in_client, event, paid_order)
+    assert "In progress" in body
+    assert "Retry issuance" not in body
+
+
+@pytest.mark.django_db
+def test_order_page_panel_says_when_the_provider_is_not_configured(
+    logged_in_client, event, paid_order
+):
+    # Used to vanish entirely — exactly when the admin most needs to know.
+    with scopes_disabled():
+        event.settings.factpt_token = ""
+
+    body = _order_page(logged_in_client, event, paid_order)
+    assert "not fully configured" in body
+    assert "Issue invoice now" not in body
+
+
+@pytest.mark.django_db
+def test_order_page_panel_shows_the_providers_per_field_errors(
+    logged_in_client, event, paid_order
+):
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_ERROR,
+            error_message="Moloni rejected the request.",
+            error_detail={"vat": "Invalid"},
+        )
+
+    body = _order_page(logged_in_client, event, paid_order)
+    assert "Moloni rejected the request." in body
+    assert "<li>vat: Invalid</li>" in body
+
+
+@pytest.mark.django_db
+def test_issue_view_refuses_an_unpaid_order_up_front(logged_in_client, event, order):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+
+    with mock.patch("pretix_ptinvoicing.views.issue_invoice") as task:
+        response = logged_in_client.post(
+            ISSUE_URL.format(event.organizer.slug, event.slug, order.code),
+            follow=True,
+        )
+    task.apply_async.assert_not_called()
+    assert "Only paid orders can be invoiced." in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_credit_view_refuses_when_nothing_is_left_to_credit(
+    logged_in_client, event, paid_order
+):
+    with mock.patch("pretix_ptinvoicing.views.issue_credit_note") as task:
+        response = logged_in_client.post(
+            CREDIT_URL.format(event.organizer.slug, event.slug, paid_order.code),
+            follow=True,
+        )
+    task.apply_async.assert_not_called()
+    assert "no issued invoice left to credit" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_views_404_when_the_plugin_is_disabled(logged_in_client, event, paid_order):
+    with scopes_disabled():
+        event.plugins = ""
+        event.save(update_fields=["plugins"])
+
+    for url in (
+        INDEX_URL.format(event.organizer.slug, event.slug),
+        SETTINGS_URL.format(event.organizer.slug, event.slug),
+        ISSUE_URL.format(event.organizer.slug, event.slug, paid_order.code),
+    ):
+        assert logged_in_client.get(url).status_code == 404
+
+
+@pytest.mark.django_db
+def test_index_filters_by_order_code(logged_in_client, event, issued_invoice):
+    url = INDEX_URL.format(event.organizer.slug, event.slug)
+    assert "FOOBAR" in logged_in_client.get(url + "?query=foo").content.decode()
+    body = logged_in_client.get(url + "?query=nope").content.decode()
+    assert "No documents match this filter." in body
+    # No inline handler: the Control panel's CSP would block it.
+    assert "onchange=" not in logged_in_client.get(url).content.decode()
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_a_failed_download_returns_to_the_order_with_a_message(
+    logged_in_client, event, issued_invoice
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+    responses.add(
+        responses.GET, "https://api.fact.pt/documents/12345/download", status=500
+    )
+
+    response = logged_in_client.get(
+        DOWNLOAD_URL.format(event.organizer.slug, event.slug, issued_invoice.pk)
+    )
+    assert response.status_code == 302
+    assert response["Location"].endswith(f"/orders/{issued_invoice.order.code}/")
+
+
+def _buyer_order_url(event, order):
+    return f"/{event.organizer.slug}/{event.slug}/order/{order.code}/{order.secret}/"
+
+
+@pytest.mark.django_db
+def test_buyer_sees_the_credit_note_too(client, event, paid_order, issued_invoice):
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=paid_order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR-credit",
+            kind=IssuedInvoice.KIND_CREDIT_NOTE,
+            credits=issued_invoice,
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="999",
+        )
+
+    body = client.get(_buyer_order_url(event, paid_order)).content.decode()
+    assert "Download invoice" in body
+    assert "Download credit note" in body
+
+
+@pytest.mark.django_db
+def test_buyer_download_honours_the_show_in_order_setting(
+    client, event, paid_order, issued_invoice
+):
+    with scopes_disabled():
+        event.settings.ptinvoicing_show_in_order = False
+
+    # No HTTP mock registered: reaching the provider would blow up the test.
+    response = client.get(
+        _buyer_order_url(event, paid_order) + f"invoicing/{issued_invoice.pk}/download/"
+    )
+    assert response.status_code == 404

@@ -1,6 +1,9 @@
+import hashlib
+from datetime import timedelta
 from typing import ClassVar
 
 from django.db import models
+from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
 
 
@@ -61,12 +64,31 @@ class IssuedInvoice(models.Model):
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
 
+    # A row stuck in "pending" this long is taken to belong to a dead worker, and may be
+    # claimed again. Until then it's in flight, and running it twice could issue twice.
+    STALE_AFTER = timedelta(minutes=10)
+
+    # Whether the buyer was e-mailed the PDF: None = not attempted (e-mail off).
+    email_sent = models.BooleanField(null=True, blank=True)
+
     class Meta:
         ordering: ClassVar = ["-created"]
         unique_together: ClassVar = [("provider", "identifier_id")]
 
     def __str__(self):
         return f"{self.order.code} — {self.get_status_display()}"
+
+    @staticmethod
+    def _fit(key, suffix=""):
+        """
+        key + suffix within the field's 50 characters, without ever cutting off what
+        tells keys apart: an over-long key keeps its head and swaps the tail for a hash
+        of the whole. Keys that already fit are unchanged, so existing rows still match.
+        """
+        if len(key) + len(suffix) <= 50:
+            return key + suffix
+        digest = hashlib.sha1(key.encode()).hexdigest()[:10]
+        return f"{key[: 50 - len(suffix) - 11]}-{digest}{suffix}"
 
     @staticmethod
     def build_identifier_id(event, order, cycle=0):
@@ -76,14 +98,68 @@ class IssuedInvoice(models.Model):
         # credited refund needs a new invoice, hence a new key ("-r1", ...). Cycle 0 keeps
         # the original format, so rows issued before cycles existed still match.
         suffix = f"-r{cycle}" if cycle else ""
-        return f"pretix-{event.slug}-{order.code}"[: 50 - len(suffix)] + suffix
+        return IssuedInvoice._fit(f"pretix-{event.slug}-{order.code}", suffix)
 
     @staticmethod
     def build_credit_identifier_id(invoice_identifier_id):
         # Derived from the invoice it credits: distinct from it under the same
         # unique_together(provider, identifier_id), one per cycle, and stable so a retry
-        # reuses the credit note's row. The suffix survives truncation.
-        return f"{invoice_identifier_id[:43]}-credit"
+        # reuses the credit note's row.
+        return IssuedInvoice._fit(invoice_identifier_id, "-credit")
+
+    @classmethod
+    def current_cycle(cls, order, provider):
+        """
+        (cycle, invoiced): the order's current cycle — how many invoices were credited
+        so far — and whether that cycle already has its invoice.
+        """
+        issued = cls.objects.filter(
+            order=order, provider=provider, status=cls.STATUS_SUCCESS
+        )
+        cycle = issued.filter(kind=cls.KIND_CREDIT_NOTE).count()
+        return cycle, issued.filter(kind=cls.KIND_INVOICE).count() > cycle
+
+    @classmethod
+    def uncredited_invoice(cls, order, provider):
+        """The latest successful invoice not credited yet — what a credit note reverses."""
+        return (
+            cls.objects.filter(
+                order=order,
+                provider=provider,
+                kind=cls.KIND_INVOICE,
+                status=cls.STATUS_SUCCESS,
+            )
+            .exclude(credit_notes__status=cls.STATUS_SUCCESS)
+            .order_by("-created")
+            .first()
+        )
+
+    @property
+    def in_flight(self):
+        """Pending and recent: a worker is (probably) issuing it right now."""
+        return (
+            self.status == self.STATUS_PENDING
+            and self.attempts > 0
+            and self.modified > now() - self.STALE_AFTER
+        )
+
+    @property
+    def error_items(self):
+        """The provider's per-field errors as "field: message" lines."""
+        items = [f"{k}: {v}" for k, v in (self.error_detail or {}).items()]
+        # Rows from before the message and the detail were stored apart hold the joined
+        # detail as their message; don't show it twice.
+        return [] if "; ".join(items) == self.error_message else items
+
+    @property
+    def error_text(self):
+        """Message and per-field errors on one line, for the overview table."""
+        return "; ".join(filter(None, [self.error_message, *self.error_items]))
+
+    @property
+    def filename(self):
+        suffix = "-credit" if self.kind == self.KIND_CREDIT_NOTE else ""
+        return f"{self.order.code}{suffix}.pdf"
 
     @property
     def display_number(self):

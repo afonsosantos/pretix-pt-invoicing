@@ -1,6 +1,6 @@
 from django.utils import timezone
 
-from ...orderdata import bare_tin, client_name, one_line
+from ...orderdata import bare_tin, client_name, invoice_lines, one_line
 
 # Fact.pt's documented limits for the client block. Every one of these is a single line:
 # pretix's street is a TextField, so a buyer pressing Enter would otherwise send a newline
@@ -8,12 +8,9 @@ from ...orderdata import bare_tin, client_name, one_line
 MAX_NAME = 100
 MAX_ADDRESS = 100
 MAX_CITY = 50
-MAX_EMAIL = 100
 
 
-def build_client_block(
-    order, client_id=None, send_email=False, custom_field_is_nif=False
-):
+def build_client_block(order, client_id=None, custom_field_is_nif=False):
     # Referencing an existing client by id sidesteps forceTin entirely — including the
     # case forceTin can't resolve on its own: Fact.pt refusing to upsert a tin that
     # already matches more than one client record ("Specify an ID").
@@ -22,17 +19,18 @@ def build_client_block(
 
     ia = getattr(order, "invoice_address", None)
     tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
+    country = ia.country.code if ia and ia.country else "PT"
 
     client = {
         "name": client_name(order, MAX_NAME),
         "address": one_line(ia and ia.street, MAX_ADDRESS) or "-",
         "city": one_line(ia and ia.city, MAX_CITY) or "-",
-        "zip": one_line(ia and ia.zipcode, 30) or "-",
-        "country": (ia.country.code if ia and ia.country else "PT"),
+        # A PT client needs a valid NNNN-NNN zip ("The zip is not a valid PT zip." for
+        # "-"); 0000-000 passes, verified against the sandbox.
+        "zip": one_line(ia and ia.zipcode, 30)
+        or ("0000-000" if country == "PT" else "-"),
+        "country": country,
     }
-
-    if send_email and order.email:
-        client["email"] = one_line(order.email, MAX_EMAIL)
 
     if tin:
         client["tin"] = tin
@@ -66,25 +64,27 @@ def build_items_block(order, event_settings):
     )
     default_type = event_settings.get("factpt_default_type", default="service")
 
-    items = []
-    for position in order.positions.all():
-        items.append(
-            {
-                "description": str(position.item.name)[:150],
-                # Fact.pt's `price` is the NET unit price: it adds taxId's VAT on top
-                # (verified against the sandbox — 15.00 at 23% came back as gross 18.45).
-                # pretix's position.price is gross, so the tax has to come back out, or
-                # every invoice would be issued above what the buyer actually paid.
-                "price": str(position.price - position.tax_value),
-                "reference": f"pretix-{position.pk}"[:20],
-                "retention": False,
-                "type": default_type,
-                "unitId": default_unit_id,
-                "taxId": default_tax_id,
-                "quantity": 1,
-            }
-        )
-    return items
+    return [
+        {
+            "description": line.name[:150],
+            # Fact.pt's `price` is the NET unit price: it adds taxId's VAT on top
+            # (verified against the sandbox — 15.00 at 23% came back as gross 18.45).
+            # pretix's prices are gross, so the tax has to come back out — see Line.net
+            # for why that's done from the rate rather than with pretix's rounded
+            # tax_value. Needs the API key's series to have 8 decimal places: a 2-decimal
+            # one rejects it, and its allowRound left invoices cents off in the sandbox.
+            # ponytail: 4-decimal net is unverified against an 8-decimal series; confirm
+            # with one document at 15.00/23% that it comes back as gross 15.00.
+            "price": str(line.net),
+            "reference": line.reference[:20],
+            "retention": False,
+            "type": default_type,
+            "unitId": default_unit_id,
+            "taxId": default_tax_id,
+            "quantity": 1,
+        }
+        for line in invoice_lines(order)
+    ]
 
 
 def build_payload(order, event_settings, identifier_id, client_id=None):
@@ -92,9 +92,6 @@ def build_payload(order, event_settings, identifier_id, client_id=None):
         "client": build_client_block(
             order,
             client_id=client_id,
-            send_email=event_settings.get(
-                "factpt_send_client_email", as_type=bool, default=False
-            ),
             custom_field_is_nif=event_settings.get(
                 "ptinvoicing_nif_custom_field", as_type=bool, default=False
             ),

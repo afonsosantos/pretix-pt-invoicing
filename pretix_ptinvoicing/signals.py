@@ -1,13 +1,21 @@
 import logging
 from decimal import Decimal
 
+from django.db import transaction
+from django.db.models import Sum
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.template.loader import get_template
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from django_scopes import scopes_disabled
-from pretix.base.models import Event, Event_SettingsStore, OrderRefund
+from pretix.base.models import (
+    Event,
+    Event_SettingsStore,
+    Order,
+    OrderPayment,
+    OrderRefund,
+)
 from pretix.base.signals import order_paid, periodic_task
 from pretix.control.signals import nav_event, nav_event_settings
 from pretix.control.signals import order_info as control_order_info
@@ -50,8 +58,40 @@ def ptinvoicing_keepalive(sender, **kwargs):
 
 @receiver(order_paid, dispatch_uid="ptinvoicing_order_paid")
 def ptinvoicing_order_paid(sender, order, **kwargs):
-    # Only enqueues the Celery task — a slow/down provider never delays checkout.
-    issue_invoice.apply_async(kwargs={"order_pk": order.pk, "event_pk": sender.pk})
+    # Only enqueues the Celery task — a slow/down provider never delays checkout. On
+    # commit, not now: pretix sends order_paid inside the payment's transaction, and a
+    # worker that loads the order before it commits sees it unpaid and skips it for good.
+    if not _auto_issue(sender):
+        return
+    transaction.on_commit(
+        lambda: issue_invoice.apply_async(
+            kwargs={"order_pk": order.pk, "event_pk": sender.pk}
+        )
+    )
+
+
+def _auto_issue(event):
+    # Off = manual only: documents are issued from the order page's buttons and nowhere
+    # else. Only the signals check it — the tasks themselves still run when asked to.
+    return event.settings.get("ptinvoicing_auto_issue", as_type=bool, default=True)
+
+
+def _refunded_in_full(order):
+    """
+    Confirmed payments all refunded by refunds that are actually *done*. Not pretix's
+    payment_refund_sum: that also subtracts refunds merely created or in transit, which
+    may still fail — and crediting money that was never returned can't be undone.
+    """
+    paid = order.payments.filter(
+        state__in=(
+            OrderPayment.PAYMENT_STATE_CONFIRMED,
+            OrderPayment.PAYMENT_STATE_REFUNDED,
+        )
+    ).aggregate(s=Sum("amount"))["s"] or Decimal("0.00")
+    refunded = order.refunds.filter(state=OrderRefund.REFUND_STATE_DONE).aggregate(
+        s=Sum("amount")
+    )["s"] or Decimal("0.00")
+    return paid - refunded <= Decimal("0.00")
 
 
 @receiver(post_save, sender=OrderRefund, dispatch_uid="ptinvoicing_refund_done")
@@ -64,22 +104,28 @@ def ptinvoicing_refund_done(sender, instance, **kwargs):
     creation the same way. Unlike an EventPluginSignal it fires for every event regardless
     of whether this plugin is enabled there, so that has to be checked by hand below.
 
-    Only fires once refunds have brought the order's net payment_refund_sum down to zero:
+    Only fires once *done* refunds have returned everything paid (_refunded_in_full):
     every provider here can only credit a document's *full* value, so a partial refund —
     this one, or an earlier partial one that this one completes — is left for the admin's
     manual "Issue credit note" button instead of crediting more than was actually refunded.
+    Checked and enqueued on commit, for the same reason as order_paid above.
     """
     if instance.state != OrderRefund.REFUND_STATE_DONE:
         return
-    with scopes_disabled():
-        order = instance.order
-        if "pretix_ptinvoicing" not in order.event.get_plugins():
-            return
-        if order.payment_refund_sum > Decimal("0.00"):
-            return
+    order_pk = instance.order_id
+
+    def enqueue():
+        with scopes_disabled():
+            order = Order.objects.select_related("event").get(pk=order_pk)
+            if "pretix_ptinvoicing" not in order.event.get_plugins():
+                return
+            if not _auto_issue(order.event) or not _refunded_in_full(order):
+                return
         issue_credit_note.apply_async(
             kwargs={"order_pk": order.pk, "event_pk": order.event_id}
         )
+
+    transaction.on_commit(enqueue)
 
 
 def _nav_entry(request, url_name, label, icon=None):
@@ -134,6 +180,9 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
             order=order, kind=IssuedInvoice.KIND_INVOICE
         ).order_by("created")
     ]
+    if provider is None and not cycles:
+        # "No invoicing" picked and nothing issued before: nothing to show.
+        return ""
     latest_credit = cycles[-1]["credit_note"] if cycles else None
     is_paid = order.status == order.STATUS_PAID
     ctx = {
@@ -141,7 +190,13 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
         "request": request,
         "event": sender,
         "provider": provider,
+        # Rendered even when not configured: the panel then says so, rather than
+        # vanishing while paid orders quietly go without documents.
         "configured": bool(provider and provider.is_configured),
+        "settings_url": reverse(
+            "plugins:pretix_ptinvoicing:settings",
+            kwargs={"organizer": sender.organizer.slug, "event": sender.slug},
+        ),
         "cycles": cycles,
         "is_paid": is_paid,
         # Paid, and nothing uncredited covers it: no invoice yet, or the last one was
@@ -171,16 +226,22 @@ def ptinvoicing_presale_order_info(sender, order, request, **kwargs):
     # its number.
     if not sender.settings.get("ptinvoicing_show_in_order", as_type=bool, default=True):
         return ""
+    provider = get_provider(sender)
+    if provider is None:
+        return ""
 
-    invoice = IssuedInvoice.objects.filter(
+    # Invoices and credit notes alike — a refunded buyer needs the credit note as much
+    # as the invoice. Only the current provider's: another one's credentials aren't
+    # around to fetch the PDF, so its button would only lead to an error.
+    documents = IssuedInvoice.objects.filter(
         order=order,
-        kind=IssuedInvoice.KIND_INVOICE,
+        provider=provider.identifier,
         status=IssuedInvoice.STATUS_SUCCESS,
-    ).first()
-    if not invoice:
+    ).order_by("created")
+    if not documents:
         return ""
 
     return get_template("pretix_ptinvoicing/presale/order_info.html").render(
-        {"order": order, "request": request, "event": sender, "invoice": invoice},
+        {"order": order, "request": request, "event": sender, "documents": documents},
         request=request,
     )

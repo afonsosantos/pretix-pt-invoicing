@@ -4,11 +4,29 @@
 //     using whatever is currently typed in (not necessarily saved yet).
 // Must stay a real static file: the Control panel's nonce-based CSP blocks inline scripts.
 document.addEventListener("DOMContentLoaded", function () {
+    // Copy buttons (Moloni's redirect URI): data-copy is the text, data-copied the label
+    // shown for a moment afterwards.
+    document.querySelectorAll(".ptinvoicing-copy").forEach(function (button) {
+        button.addEventListener("click", function () {
+            const label = button.querySelector(".ptinvoicing-copy-label");
+            const original = label.textContent;
+            navigator.clipboard.writeText(button.dataset.copy).then(function () {
+                label.textContent = button.dataset.copied;
+                setTimeout(function () {
+                    label.textContent = original;
+                }, 2000);
+            });
+        });
+    });
+
     const radios = document.querySelectorAll("input[name=ptinvoicing_provider]");
     const fieldsets = Array.prototype.slice.call(
         document.querySelectorAll(".ptinvoicing-provider")
     );
     if (!radios.length || !fieldsets.length) return;
+
+    // Translated by the template (data-text-* on the form): a static file can't be.
+    const text = document.getElementById("ptinvoicing-settings").dataset;
 
     function selectedProvider() {
         const checked = document.querySelector("input[name=ptinvoicing_provider]:checked");
@@ -77,7 +95,7 @@ document.addEventListener("DOMContentLoaded", function () {
         if (currentValue && !matched) {
             const option = document.createElement("option");
             option.value = currentValue;
-            option.textContent = currentValue + " (current)";
+            option.textContent = text.textSaved + " " + currentValue;
             option.selected = true;
             field.prepend(option);
         }
@@ -100,7 +118,7 @@ document.addEventListener("DOMContentLoaded", function () {
             }
         });
 
-        setStatus(fieldset, "Loading options…", false);
+        setStatus(fieldset, text.textLoading, false);
 
         fetch(lookupsUrl, {
             method: "POST",
@@ -119,7 +137,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (!result.ok || result.data.error) {
                     setStatus(
                         fieldset,
-                        "Could not load options: " + (result.data.error || "unknown error"),
+                        text.textFailed + " " + (result.data.error || text.textUnknown),
                         true
                     );
                     return;
@@ -142,7 +160,7 @@ document.addEventListener("DOMContentLoaded", function () {
                 if (changed) loadOptions();
             })
             .catch(function () {
-                setStatus(fieldset, "Could not reach the server to load options.", true);
+                setStatus(fieldset, text.textUnreachable, true);
             });
     }
 

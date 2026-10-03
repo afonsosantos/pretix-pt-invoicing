@@ -11,33 +11,32 @@ from pretix.base.services.mail import mail
 logger = logging.getLogger(__name__)
 
 
-def _send_document_email(order, provider, invoice, subject, text, filename):
-    # Named mail.py, not email.py: email.py here would shadow stdlib email on sys.path,
-    # which is what `make translate` puts this directory on, breaking it.
-    # pretix's own order e-mails can't attach this: they only attach order.invoices.
-    # Failures are logged and swallowed — the document is already issued.
+def _send_document_email(order, provider, invoice, subject, text, context=None):
+    """
+    E-mail the document's PDF to the buyer; True if it was handed to pretix's mailer.
 
+    Named mail.py, not email.py: email.py here would shadow stdlib email on sys.path,
+    which is what `make translate` puts this directory on, breaking it.
+    pretix's own order e-mails can't attach this: they only attach order.invoices.
+    *Every* failure is logged and swallowed — the document is already issued, and a
+    mail problem must neither flip it to error nor make the task retry issuance.
+    """
     try:
         pdf_bytes = provider.download(invoice.document_id)
-    except Exception:
-        logger.exception(
-            "ptinvoicing: could not download %s for %s to e-mail it",
-            invoice.document_id,
-            order.code,
+        cached = CachedFile.objects.create(
+            filename=invoice.filename, type="application/pdf", web_download=False
         )
-        return
-
-    cached = CachedFile.objects.create(
-        filename=filename, type="application/pdf", web_download=False
-    )
-    cached.file.save(filename, ContentFile(pdf_bytes))
-
-    try:
+        cached.file.save(invoice.filename, ContentFile(pdf_bytes))
         mail(
             order.email,
             subject,
             text,
-            {"code": order.code, "event": str(order.event.name)},
+            {
+                "code": order.code,
+                "event": str(order.event.name),
+                "number": invoice.display_number,
+                **(context or {}),
+            },
             event=order.event,
             order=order,
             locale=order.locale,
@@ -45,25 +44,29 @@ def _send_document_email(order, provider, invoice, subject, text, filename):
         )
     except Exception:
         logger.exception(
-            "ptinvoicing: could not e-mail %s for %s", filename, order.code
+            "ptinvoicing: could not e-mail %s for %s", invoice.filename, order.code
         )
+        return False
+    return True
 
 
 def send_invoice_email(order, provider, invoice):
-    _send_document_email(
+    return _send_document_email(
         order,
         provider,
         invoice,
-        subject=LazyI18nString.from_gettext(_("Your invoice for order {code}")),
+        subject=LazyI18nString.from_gettext(
+            _("Your invoice-receipt {number} for order {code}")
+        ),
         text=LazyI18nString.from_gettext(
             _(
                 "Hello,\n\n"
-                "your invoice for order {code} is attached to this e-mail.\n\n"
+                "your invoice-receipt {number} for order {code} is attached to this "
+                "e-mail.\n\n"
                 "Best regards,\n"
                 "Your {event} team"
             )
         ),
-        filename=f"{order.code}.pdf",
     )
 
 
@@ -109,18 +112,21 @@ def send_connection_expired_email(event, provider):
 
 
 def send_credit_note_email(order, provider, credit_note):
-    _send_document_email(
+    return _send_document_email(
         order,
         provider,
         credit_note,
-        subject=LazyI18nString.from_gettext(_("Your credit note for order {code}")),
+        subject=LazyI18nString.from_gettext(
+            _("Your credit note {number} for order {code}")
+        ),
         text=LazyI18nString.from_gettext(
             _(
                 "Hello,\n\n"
-                "a credit note for order {code} is attached to this e-mail.\n\n"
+                "attached to this e-mail is credit note {number} for order {code}. It "
+                "cancels invoice-receipt {invoice}.\n\n"
                 "Best regards,\n"
                 "Your {event} team"
             )
         ),
-        filename=f"{order.code}-credit.pdf",
+        context={"invoice": credit_note.credits.display_number},
     )

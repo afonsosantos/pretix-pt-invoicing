@@ -69,6 +69,15 @@ def test_client_name_prefers_the_company_and_truncates(order):
     assert client_name(order, 100).startswith("CCC")
 
 
+@pytest.mark.django_db
+def test_client_name_without_a_name_is_the_final_consumer_not_the_email(order):
+    # An empty invoice address, as pretix saves one when the buyer skips it.
+    with scopes_disabled():
+        InvoiceAddress.objects.create(order=order)
+    order.refresh_from_db()
+    assert client_name(order) == "Consumidor Final"
+
+
 def test_one_line_flattens_newlines():
     # pretix's street is a TextField; both providers' APIs want a single line.
     assert one_line("Rua do Alecrim 11\n3.º Esq.", 100) == "Rua do Alecrim 11 3.º Esq."

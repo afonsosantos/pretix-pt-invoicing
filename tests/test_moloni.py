@@ -45,6 +45,11 @@ def mock_existing_product(product_id=12):
     )
 
 
+def mock_no_customer():
+    # Every issuance looks the buyer up first — by NIF, or 999999990 without one.
+    responses.add(responses.POST, API.format("customers/getByVat"), json=[], status=200)
+
+
 def mock_taxes(rate, tax_id=11):
     responses.add(
         responses.POST,
@@ -86,6 +91,7 @@ def moloni_event(event, order):
 @responses.activate
 def test_issues_through_the_generic_core(moloni_event, order, position):
     mock_grant()
+    mock_no_customer()
     mock_existing_product()
     responses.add(
         responses.POST,
@@ -180,6 +186,7 @@ def test_existing_customer_is_reused_by_vat(moloni_event, order, position):
 @responses.activate
 def test_api_rejection_is_terminal(moloni_event, order, position):
     mock_grant()
+    mock_no_customer()
     responses.add(
         responses.POST,
         API.format("customers/insert"),
@@ -199,6 +206,7 @@ def test_api_rejection_is_terminal(moloni_event, order, position):
 @responses.activate
 def test_token_is_cached_in_event_settings(moloni_event, order, position):
     mock_grant(access="tok-cached")
+    mock_no_customer()
     mock_existing_product()
     responses.add(
         responses.POST,
@@ -363,6 +371,7 @@ def test_net_price_is_sent(moloni_event, order, item):
         )
 
     mock_grant()
+    mock_no_customer()
     mock_existing_product()
     mock_taxes(rate=23)
     responses.add(
@@ -381,7 +390,7 @@ def test_net_price_is_sent(moloni_event, order, item):
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": moloni_event.pk})
 
     sent = sent_to("invoiceReceipts/insert")
-    assert sent["products"][0]["price"] == 15.0
+    assert sent["products"][0]["price"] == 15.0  # 18.45 / 1.23
     # A taxed line carries the rate: Moloni rejected line taxes without `value`.
     assert sent["products"][0]["taxes"] == [
         {"tax_id": 11, "value": 23.0, "order": 0, "cumulative": 0}
@@ -446,6 +455,7 @@ def test_missing_catalog_product_is_created_once_per_item(
         )
 
     mock_grant()
+    mock_no_customer()
     responses.add(
         responses.POST, API.format("products/getByReference"), json=[], status=200
     )
@@ -487,6 +497,163 @@ def test_missing_catalog_product_is_created_once_per_item(
     assert "taxes" not in created
     lines = sent_to("invoiceReceipts/insert")["products"]
     assert [line["product_id"] for line in lines] == [77, 77]
+
+
+def _issue_with_customers(order, event, found, address=None):
+    """Issue against a Moloni that already holds `found` customers for the lookup."""
+    if address:
+        with scopes_disabled():
+            InvoiceAddress.objects.create(order=order, **address)
+        order.refresh_from_db()
+    mock_grant()
+    mock_existing_product()
+    responses.add(
+        responses.POST, API.format("customers/getByVat"), json=found, status=200
+    )
+    responses.add(
+        responses.POST,
+        API.format("countries/getAll"),
+        json=[
+            {"country_id": 1, "iso_3166_1": "pt"},
+            {"country_id": 4, "iso_3166_1": "de"},
+        ],
+        status=200,
+    )
+    responses.add(
+        responses.POST, API.format("customers/insert"), json={"customer_id": 50}
+    )
+    responses.add(
+        responses.POST, API.format("invoiceReceipts/insert"), json={"document_id": 1}
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+
+def _inserted(endpoint):
+    return [c for c in responses.calls if f"/{endpoint}/" in c.request.url]
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_buyers_without_nif_reuse_the_final_consumer_with_their_name(
+    moloni_event, order, position
+):
+    # One customer per sale is what once bricked a Fact.pt account.
+    _issue_with_customers(
+        order,
+        moloni_event,
+        [
+            {"customer_id": 31, "vat": "999999990", "name": "Consumidor Final"},
+            {"customer_id": 30, "vat": "999999990", "name": "Consumidor Final"},
+            {"customer_id": 29, "vat": "999999990", "name": "Someone else"},
+        ],
+    )
+
+    assert sent_to("customers/getByVat")["vat"] == "999999990"
+    assert not _inserted("customers/insert")
+    assert sent_to("invoiceReceipts/insert")["customer_id"] == 30
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_several_customers_with_one_nif_stop_issuance(moloni_event, order, position):
+    _issue_with_customers(
+        order,
+        moloni_event,
+        [
+            {"customer_id": 1, "vat": "237892294"},
+            {"customer_id": 2, "vat": "237892294"},
+        ],
+        address={"vat_id": "PT237892294", "country": "PT"},
+    )
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_ERROR
+    assert "Merge them" in invoice.error_message
+    assert not _inserted("customers/insert")
+    assert not _inserted("invoiceReceipts/insert")
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_a_foreign_buyer_gets_their_own_country(moloni_event, order, position):
+    _issue_with_customers(
+        order,
+        moloni_event,
+        [],
+        address={"company": "GmbH", "vat_id": "DE123456789", "country": "DE"},
+    )
+
+    customer = sent_to("customers/insert")
+    assert customer["country_id"] == 4
+    assert customer["vat"] == "DE123456789"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_a_failed_customer_lookup_does_not_create_another(
+    moloni_event, order, position
+):
+    mock_grant()
+    responses.add(
+        responses.POST,
+        API.format("customers/getByVat"),
+        json={"error": "boom"},
+        status=200,
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": moloni_event.pk})
+
+    assert not _inserted("customers/insert")
+    with scopes_disabled():
+        assert (
+            IssuedInvoice.objects.get(order=order).status == IssuedInvoice.STATUS_ERROR
+        )
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_fees_are_invoiced_as_their_own_catalog_product(moloni_event, order, position):
+    from pretix.base.models import OrderFee
+
+    with scopes_disabled():
+        OrderFee.objects.create(
+            order=order,
+            fee_type=OrderFee.FEE_TYPE_SERVICE,
+            value=Decimal("2.00"),
+            tax_rate=Decimal("0.00"),
+            tax_value=Decimal("0.00"),
+        )
+        order.total = Decimal("25.00")
+        order.save(update_fields=["total"])
+    _issue_with_customers(order, moloni_event, [])
+
+    sent = sent_to("invoiceReceipts/insert")
+    assert [p["price"] for p in sent["products"]] == [23.0, 2.0]
+    references = [
+        json.loads(c.request.body)["reference"]
+        for c in _inserted("products/getByReference")
+    ]
+    assert references == [f"pretix-item-{position.item_id}", "pretix-fee-service"]
+    # The payment and the lines now add up to the same total.
+    assert sent["payments"][0]["value"] == 25.0
+
+
+@responses.activate
+def test_a_refresh_token_rotated_by_another_worker_is_adopted():
+    # Two workers refresh at once: Moloni rotates the token, so the loser's has just
+    # been spent. It must pick up the pair the winner stored, not declare the
+    # connection dead.
+    responses.add(responses.GET, GRANT, json={"error": "invalid_grant"}, status=400)
+    client = MoloniClient(
+        "cid",
+        "secret",
+        refresh_token="ref-spent",
+        reload_tokens=lambda: ("tok-winner", "ref-winner", time.time() + 3000),
+    )
+
+    assert client.token() == "tok-winner"
+    assert client.refresh_token == "ref-winner"
 
 
 CONNECT_URL = "/control/event/{}/{}/invoicing/settings/moloni/connect/"
@@ -582,13 +749,47 @@ def test_disconnect_clears_tokens(logged_in_client, oauth_event):
     with scopes_disabled():
         oauth_event.settings.moloni_refresh_token = "ref"
         oauth_event.settings.moloni_access_token = "tok"
-    logged_in_client.post(
-        DISCONNECT_URL.format(oauth_event.organizer.slug, oauth_event.slug)
-    )
+    url = DISCONNECT_URL.format(oauth_event.organizer.slug, oauth_event.slug)
+    # Asked first: it stops issuance.
+    confirm = logged_in_client.get(url)
+    assert confirm.status_code == 200
+    assert b"until you connect again" in confirm.content
+    with scopes_disabled():
+        oauth_event.settings.flush()
+        assert MoloniProvider(oauth_event).connection_state == "connected"
+
+    logged_in_client.post(url)
     with scopes_disabled():
         oauth_event.settings.flush()
         assert MoloniProvider(oauth_event).connection_state is None
         assert not oauth_event.settings.get("moloni_access_token")
+
+
+@pytest.mark.django_db
+def test_connect_keeps_everything_typed_but_not_the_provider_choice(
+    logged_in_client, oauth_event
+):
+    # The OAuth round-trip leaves the page: anything typed but unsaved used to be lost.
+    with scopes_disabled():
+        oauth_event.settings.ptinvoicing_provider = "factpt"
+    logged_in_client.post(
+        CONNECT_URL.format(oauth_event.organizer.slug, oauth_event.slug),
+        {
+            "ptinvoicing_provider": "moloni",
+            "ptinvoicing_email_invoice": "on",
+            "moloni-moloni_client_id": "typed-cid",
+            "moloni-moloni_client_secret": "typed-secret",
+            "moloni-moloni_exemption_reason": "M05",
+        },
+    )
+    with scopes_disabled():
+        oauth_event.settings.flush()
+        s = oauth_event.settings
+        assert s.get("moloni_client_secret") == "typed-secret"
+        assert s.get("moloni_exemption_reason") == "M05"
+        assert s.get("ptinvoicing_email_invoice", as_type=bool) is True
+        # Connecting a provider isn't choosing it.
+        assert s.get("ptinvoicing_provider") == "factpt"
 
 
 @pytest.mark.django_db
@@ -659,6 +860,28 @@ def test_settings_page_shows_connection_state(logged_in_client, oauth_event):
     content = logged_in_client.get(url).content
     assert b"has expired" in content
     assert b"Reconnect to Moloni" in content
+
+
+@pytest.mark.django_db
+def test_settings_page_asks_for_a_save_until_moloni_is_in_use(
+    logged_in_client, oauth_event
+):
+    url = f"/control/event/{oauth_event.organizer.slug}/{oauth_event.slug}/invoicing/settings/"
+    with scopes_disabled():
+        oauth_event.settings.moloni_refresh_token = "ref"
+        oauth_event.settings.ptinvoicing_provider = "factpt"
+    content = logged_in_client.get(url).content.decode()
+    assert "fill in the Moloni settings" in content
+    # The redirect URI comes with a copy button.
+    assert 'class="btn btn-default btn-xs ptinvoicing-copy"' in content
+    assert "/control/ptinvoicing/moloni/callback/" in content
+
+    with scopes_disabled():
+        oauth_event.settings.ptinvoicing_provider = "moloni"
+    content = logged_in_client.get(url).content.decode()
+    assert "fill in the Moloni settings" not in content
+    # Every provider's fieldset is on the page; the one not chosen still says so.
+    assert "fill in the Fact.pt settings" in content
 
 
 @pytest.mark.django_db
@@ -790,6 +1013,7 @@ def test_validation_error_list_is_a_terminal_provider_error(
     # Moloni returns validation errors as a list with HTTP 200; this used to crash with
     # "'list' object has no attribute 'get'" instead of recording the rejection.
     mock_grant()
+    mock_no_customer()
     responses.add(
         responses.POST,
         API.format("customers/getNextNumber"),

@@ -1,14 +1,15 @@
 {% load i18n %}
 {% comment %}
-    Buttons, not nested forms: they post the surrounding settings form to their own
-    formaction, which is also how Connect picks up a client id typed but not yet saved.
+    Connect is a button, not a nested form: it posts the surrounding settings form to its
+    own formaction, which is how it keeps everything typed but not yet saved. Disconnect
+    is a link to a confirmation page instead — it stops issuance.
 {% endcomment %}
 <div class="form-group">
     <label class="col-md-3 control-label">{% trans "Moloni connection" %}</label>
     <div class="col-md-9">
         {% if provider.connection_state == "connected" %}
             <p class="form-control-static text-success">
-                <span class="fa fa-check"></span> {% trans "Connected" %}
+                <span class="fa fa-check" aria-hidden="true"></span> {% trans "Connected" %}
             </p>
         {% elif provider.connection_state == "expired" %}
             <div class="alert alert-danger">
@@ -25,15 +26,27 @@
             {% if provider.connection_state %}{% trans "Reconnect to Moloni" %}{% else %}{% trans "Connect to Moloni" %}{% endif %}
         </button>
         {% if provider.connection_state %}
-            <button type="submit" class="btn btn-danger" formnovalidate
-                    formaction="{% url "plugins:pretix_ptinvoicing:moloni_disconnect" organizer=request.organizer.slug event=request.event.slug %}">
+            <a class="btn btn-danger"
+               href="{% url "plugins:pretix_ptinvoicing:moloni_disconnect" organizer=request.organizer.slug event=request.event.slug %}">
                 {% trans "Disconnect" %}
-            </button>
+            </a>
         {% endif %}
         <span class="help-block">
-            {% blocktrans trimmed with uri=provider.redirect_uri %}
-                Register <code>{{ uri }}</code> as the redirect URI of your Moloni developer
-                app. Once connected, no username or password is needed.
+            {% comment %}
+                The address on its own line so the copy button sits right beside it (wired up
+                by settings.js: the CSP blocks inline handlers).
+            {% endcomment %}
+            <code>{{ provider.redirect_uri }}</code>
+            <button type="button" class="btn btn-default btn-xs ptinvoicing-copy"
+                    data-copy="{{ provider.redirect_uri }}" data-copied="{% trans "Copied" %}">
+                <span class="fa fa-clipboard" aria-hidden="true"></span>
+                <span class="ptinvoicing-copy-label">{% trans "Copy" %}</span>
+            </button>
+            <br>
+            {% blocktrans trimmed %}
+                Register this address as the redirect URI of your Moloni developer app. Once
+                connected, no username or password is needed. Whatever you have typed on this
+                page is saved when you connect.
             {% endblocktrans %}
         </span>
     </div>

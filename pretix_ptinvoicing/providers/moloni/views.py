@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 from django.conf import settings
 from django.contrib import messages
 from django.http import Http404
-from django.shortcuts import redirect
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from django.views import View
@@ -22,6 +22,8 @@ from django_scopes import scopes_disabled
 from pretix.base.models import Event
 from pretix.control.permissions import EventPermissionRequiredMixin
 
+from ...views import PluginEnabledMixin, save_valid_fields
+from ..base import ProviderUnreachable
 from . import MoloniAPIError, MoloniProvider
 from .client import AUTHORIZE_URL
 
@@ -44,16 +46,14 @@ def _settings_url(event):
     return f"{url}?provider=moloni"
 
 
-class ConnectView(EventPermissionRequiredMixin, View):
+class ConnectView(EventPermissionRequiredMixin, PluginEnabledMixin, View):
     permission = "can_change_event_settings"
 
     def post(self, request, *args, **kwargs):
         s = request.event.settings
-        # Take the ids as typed on the settings page, so the admin needn't Save first.
-        for key in ("moloni_client_id", "moloni_client_secret"):
-            value = request.POST.get(f"moloni-{key}", "").strip()
-            if value:
-                s.set(key, value)
+        # Keep everything typed on the settings page (the client id and secret above
+        # all), so the admin needn't Save first and loses nothing to the round-trip.
+        save_valid_fields(request, MoloniProvider.identifier)
         if not (s.get("moloni_client_id") and s.get("moloni_client_secret")):
             messages.error(
                 request, _("Fill in the developer ID and client secret first.")
@@ -73,8 +73,25 @@ class ConnectView(EventPermissionRequiredMixin, View):
         return redirect(f"{AUTHORIZE_URL}?{query}")
 
 
-class DisconnectView(EventPermissionRequiredMixin, View):
+class DisconnectView(EventPermissionRequiredMixin, PluginEnabledMixin, View):
     permission = "can_change_event_settings"
+
+    def get(self, request, *args, **kwargs):
+        # Asked first: without a password fallback, disconnecting stops issuance.
+        return render(
+            request,
+            "pretix_ptinvoicing/control/confirm.html",
+            {
+                "title": _("Disconnect from Moloni"),
+                "text": _(
+                    "No invoices or credit notes can be issued through Moloni for this "
+                    "event until you connect again."
+                ),
+                "button": _("Disconnect"),
+                "danger": True,
+                "next": _settings_url(request.event),
+            },
+        )
 
     def post(self, request, *args, **kwargs):
         MoloniProvider(request.event).disconnect()
@@ -101,8 +118,12 @@ class CallbackView(View):
                 .filter(pk=pending["event"])
                 .first()
             )
-        if event is None or not request.user.has_event_permission(
-            event.organizer, event, "can_change_event_settings", request=request
+        if (
+            event is None
+            or "pretix_ptinvoicing" not in event.get_plugins()
+            or not request.user.has_event_permission(
+                event.organizer, event, "can_change_event_settings", request=request
+            )
         ):
             raise Http404()
 
@@ -112,11 +133,23 @@ class CallbackView(View):
             return redirect(_settings_url(event))
         try:
             MoloniProvider(event).connect(code, callback_url())
-        except MoloniAPIError as e:
+        except (MoloniAPIError, ProviderUnreachable) as e:
             messages.error(
                 request,
-                _("Could not connect to Moloni: %(error)s") % {"error": e.as_text()},
+                _("Could not connect to Moloni: %(error)s")
+                % {"error": e.as_text() if isinstance(e, MoloniAPIError) else e},
             )
         else:
-            messages.success(request, _("Connected to Moloni."))
+            provider = MoloniProvider(event)
+            if provider.in_use:
+                messages.success(request, _("Connected to Moloni."))
+            else:
+                messages.success(
+                    request,
+                    _(
+                        "Connected to Moloni. Now choose the company and the other "
+                        "Moloni settings, then click Save — nothing is issued through "
+                        "Moloni until you do."
+                    ),
+                )
         return redirect(_settings_url(event))

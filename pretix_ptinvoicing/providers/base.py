@@ -23,6 +23,14 @@ class ProviderError(Exception):
         return self.message
 
 
+class ProviderUnreachable(Exception):
+    """
+    The provider couldn't be reached (network error, timeout). Deliberately *not* a
+    ProviderError: it's transient, so tasks.py retries it when that's safe — and the
+    request may or may not have landed, which a ProviderError would wrongly rule out.
+    """
+
+
 @dataclass
 class IssuedDocument:
     """What every provider returns from issue(): the bits worth storing."""
@@ -73,6 +81,14 @@ class InvoiceProvider:
     def is_configured(self):
         """False = plugin enabled but not set up yet; tasks.py then skips silently."""
         raise NotImplementedError
+
+    @property
+    def in_use(self):
+        """Saved as the event's provider, and with everything it needs to issue."""
+        return (
+            self.settings.get("ptinvoicing_provider") == self.identifier
+            and self.is_configured
+        )
 
     def issue(self, order, identifier_id):
         """

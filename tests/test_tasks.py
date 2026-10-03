@@ -4,6 +4,7 @@ from typing import ClassVar
 from urllib.parse import quote
 
 import pytest
+import requests
 import responses
 from django.core import mail as django_mail
 from django_scopes import scopes_disabled
@@ -138,8 +139,10 @@ def test_api_error_marks_invoice_as_error(order, event, position):
     with scopes_disabled():
         invoice = IssuedInvoice.objects.get(order=order)
     assert invoice.status == IssuedInvoice.STATUS_ERROR
-    assert invoice.error_message == "tin: Invalid"
+    # The message and the per-field errors are stored apart, and shown together.
+    assert invoice.error_message == "Invalid VAT"
     assert invoice.error_detail == {"tin": "Invalid"}
+    assert invoice.error_text == "Invalid VAT; tin: Invalid"
 
 
 @pytest.mark.django_db
@@ -307,8 +310,13 @@ def test_emails_the_credit_note_to_the_buyer_when_enabled(order, event, position
     sent = django_mail.outbox[0]
     assert order.email in sent.to
     assert [a[0] for a in sent.attachments] == [f"{order.code}-credit.pdf"]
-    assert sent.subject == f"Your credit note for order {order.code}"
-    assert f"a credit note for order {order.code}" in sent.body
+    # No number lookup mocked, so the numbers fall back to the document ids.
+    assert sent.subject == f"Your credit note 999 for order {order.code}"
+    assert f"credit note 999 for order {order.code}" in sent.body
+    assert "It cancels invoice-receipt 12345." in sent.body
+    with scopes_disabled():
+        credit_note = IssuedInvoice.objects.get(kind=IssuedInvoice.KIND_CREDIT_NOTE)
+    assert credit_note.email_sent is True
 
 
 @pytest.mark.django_db
@@ -351,8 +359,10 @@ def test_credit_note_email_is_translated_to_the_buyers_locale(order, event, posi
 
     assert len(django_mail.outbox) == 1
     sent = django_mail.outbox[0]
-    assert sent.subject == f"A sua nota de crédito da encomenda {order.code}"
-    assert f"segue em anexo a nota de crédito da encomenda {order.code}" in sent.body
+    assert sent.subject == f"A sua nota de crédito 999 da encomenda {order.code}"
+    assert (
+        f"segue em anexo a nota de crédito 999 da encomenda {order.code}" in sent.body
+    )
 
 
 @pytest.mark.django_db
@@ -422,14 +432,21 @@ def test_already_successful_invoice_is_not_reprocessed(order, event):
 
 
 @pytest.mark.django_db
-def test_provider_selected_but_unconfigured_skips_silently(order, event):
+def test_provider_selected_but_unconfigured_records_an_error(order, event):
+    # Not skipped silently: an expired Moloni connection or a half-done setup must
+    # leave a visible, retryable row, not a paid order that never gets its document.
     with scopes_disabled():
         event.settings.ptinvoicing_provider = "factpt"
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
 
     issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
     with scopes_disabled():
-        assert IssuedInvoice.objects.count() == 0
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_ERROR
+    assert "not fully configured" in invoice.error_message
+    assert invoice.attempts == 0
 
 
 @pytest.mark.django_db
@@ -497,20 +514,20 @@ def test_final_consumer_reuses_an_existing_client_instead_of_duplicating(
     mock_factpt_taxes()
     responses.add(
         responses.GET,
-        f"https://api.fact.pt/clients?search={quote(order.email)}",
+        f"https://api.fact.pt/clients?search={quote('Consumidor Final')}",
         json={
             "AppStatusCode": 200,
             "AppResponse": {
                 "data": [
                     {
                         "id": "9987",
-                        "name": order.email,
+                        "name": "Consumidor Final",
                         "tin": "999999990",
                         "isFinalConsumer": True,
                     },
                     {
                         "id": "9985",
-                        "name": order.email,
+                        "name": "Consumidor Final",
                         "tin": "999999990",
                         "isFinalConsumer": True,
                     },
@@ -566,8 +583,10 @@ def test_emails_the_invoice_to_the_buyer_when_enabled(order, event, position):
     sent = django_mail.outbox[0]
     assert order.email in sent.to
     assert [a[0] for a in sent.attachments] == [f"{order.code}.pdf"]
-    assert sent.subject == f"Your invoice for order {order.code}"
-    assert f"your invoice for order {order.code}" in sent.body
+    assert sent.subject == f"Your invoice-receipt 12345 for order {order.code}"
+    assert f"your invoice-receipt 12345 for order {order.code}" in sent.body
+    with scopes_disabled():
+        assert IssuedInvoice.objects.get(order=order).email_sent is True
 
 
 @pytest.mark.django_db
@@ -606,8 +625,11 @@ def test_invoice_email_is_translated_to_the_buyers_locale(order, event, position
 
     assert len(django_mail.outbox) == 1
     sent = django_mail.outbox[0]
-    assert sent.subject == f"A sua fatura da encomenda {order.code}"
-    assert f"segue em anexo a sua fatura da encomenda {order.code}" in sent.body
+    assert sent.subject == f"A sua fatura-recibo 12345 da encomenda {order.code}"
+    assert (
+        f"segue em anexo a sua fatura-recibo 12345 da encomenda {order.code}"
+        in sent.body
+    )
 
 
 @pytest.mark.django_db
@@ -977,3 +999,140 @@ def test_credit_note_no_auto_retry_when_the_provider_cannot_deduplicate(
     issue_credit_note.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
 
     assert retries == []
+
+
+def _paid_with_dummy(order, event):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+
+@pytest.mark.django_db
+def test_an_attempt_in_flight_is_not_run_twice(order, event, dummy_provider):
+    # A double click, a duplicate signal or an acks_late redelivery while the first
+    # attempt is still talking to the provider — for Moloni that would be a second
+    # official invoice.
+    _paid_with_dummy(order, event)
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_PENDING,
+            attempts=1,
+        )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.issued == []
+
+
+@pytest.mark.django_db
+def test_a_stale_pending_attempt_can_be_claimed_again(order, event, dummy_provider):
+    # A worker that died mid-attempt mustn't block the order forever.
+    _paid_with_dummy(order, event)
+    with scopes_disabled():
+        row = IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_PENDING,
+            attempts=1,
+        )
+        IssuedInvoice.objects.filter(pk=row.pk).update(
+            modified=row.modified - IssuedInvoice.STALE_AFTER * 2
+        )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.issued == [(order.code, "pretix-dummy-FOOBAR")]
+
+
+@pytest.mark.django_db
+def test_an_invoice_issued_under_an_older_key_is_not_issued_again(
+    order, event, dummy_provider
+):
+    # Keys for very long slugs changed format; the cycle's existing invoice still counts.
+    _paid_with_dummy(order, event)
+    with scopes_disabled():
+        IssuedInvoice.objects.create(
+            order=order,
+            provider="dummy",
+            identifier_id="pretix-some-old-format",
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="OLD",
+        )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.issued == []
+
+
+@pytest.mark.django_db
+def test_an_ambiguous_failure_warns_about_duplicates_when_not_retried(
+    order, event, dummy_provider, monkeypatch
+):
+    _paid_with_dummy(order, event)
+    dummy_provider.fail_with = OSError("read timed out")
+    monkeypatch.setattr(dummy_provider, "deduplicates_issuance", False)
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        message = IssuedInvoice.objects.get(order=order).error_message
+    assert "read timed out" in message
+    assert "may or may not have been created" in message
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_factpt_network_failure_is_retried(order, event, position, monkeypatch):
+    # Used to be a FactptAPIError — a ProviderError, hence terminal — so the automatic
+    # retry could never run for Fact.pt. identifierId makes retrying it safe.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+    mock_factpt_taxes()
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        body=requests.Timeout("read timed out"),
+    )
+    retries = []
+    monkeypatch.setattr(
+        issue_invoice, "retry", lambda **kw: retries.append(kw) or Exception("retry")
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert len(retries) == 1
+    with scopes_disabled():
+        assert "retrying automatically" in (
+            IssuedInvoice.objects.get(order=order).error_message
+        )
+
+
+@pytest.mark.django_db
+def test_a_storage_failure_while_mailing_is_swallowed(
+    order, event, position, dummy_provider, monkeypatch
+):
+    _paid_with_dummy(order, event)
+    with scopes_disabled():
+        event.settings.ptinvoicing_email_invoice = True
+
+    def broken(**kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("pretix_ptinvoicing.mail.CachedFile.objects.create", broken)
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_SUCCESS
+    assert invoice.email_sent is False

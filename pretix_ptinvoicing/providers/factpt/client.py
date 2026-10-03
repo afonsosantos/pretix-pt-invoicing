@@ -3,7 +3,7 @@ from urllib.parse import quote
 import requests
 from django.utils.translation import gettext_lazy as _
 
-from ..base import ProviderError
+from ..base import ProviderError, ProviderUnreachable
 
 API_VERSION = "1.0.0"
 
@@ -36,7 +36,11 @@ class FactptClient:
                 method, url, json=payload, headers=self._headers(), timeout=self.timeout
             )
         except requests.RequestException as e:
-            raise FactptAPIError(_("Could not reach Fact.pt: %(error)s") % {"error": e})
+            # Not a FactptAPIError: a timeout is transient and may have landed, so the
+            # task must be free to retry it (the identifierId guards the retry).
+            raise ProviderUnreachable(
+                _("Could not reach Fact.pt: %(error)s") % {"error": e}
+            ) from e
 
         try:
             data = response.json()

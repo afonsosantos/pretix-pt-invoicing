@@ -1,0 +1,81 @@
+{% load i18n %}
+{% comment %}
+    One document row of the order panel (order_info.html). Takes `doc` (an IssuedInvoice
+    or None), `label`, and the action offered when there's no successful document:
+    `action` (URL name: issue/credit) with `action_label`, or no action at all.
+    The action links to a confirmation page rather than posting straight away: either
+    one issues an official document reported to the tax authority, which can't be undone.
+{% endcomment %}
+<tr>
+    <td>{{ label }}</td>
+    <td>
+        {% if doc.status == "success" %}
+            <span class="label label-success">{% trans "Issued" %}</span>
+        {% elif doc.status == "error" %}
+            <span class="label label-danger">{% trans "Error" %}</span>
+        {% elif doc %}
+            <span class="label label-warning">{% trans "Processing" %}</span>
+        {% else %}—{% endif %}
+    </td>
+    <td>
+        {% if doc.document_id %}
+            {{ doc.display_number }}
+            {% if doc.permanent_url %}
+                &middot;
+                <a href="{{ doc.permanent_url }}" target="_blank" rel="noopener">
+                    {% blocktrans trimmed with provider=doc.provider_label %}
+                        Open at {{ provider }}
+                    {% endblocktrans %}
+                    <span class="fa fa-external-link" aria-hidden="true"></span>
+                </a>
+            {% endif %}
+            {% if doc.email_sent is True %}
+                <br><span class="text-muted"><span class="fa fa-envelope-o" aria-hidden="true"></span> {% trans "E-mailed to the buyer" %}</span>
+            {% elif doc.email_sent is False %}
+                <br><span class="text-danger"><span class="fa fa-envelope-o" aria-hidden="true"></span> {% trans "Could not be e-mailed to the buyer" %}</span>
+            {% endif %}
+        {% else %}—{% endif %}
+    </td>
+    <td>
+        {% if doc %}
+            {{ doc.modified|date:"SHORT_DATETIME_FORMAT" }}
+            <span class="text-muted">
+                {% blocktrans trimmed count attempts=doc.attempts %}
+                    {{ attempts }} attempt
+                {% plural %}
+                    {{ attempts }} attempts
+                {% endblocktrans %}
+            </span>
+        {% else %}—{% endif %}
+    </td>
+    <td class="text-right flip">
+        {% if doc.status == "success" %}
+            <a href="{% url "plugins:pretix_ptinvoicing:download" event=request.event.slug organizer=request.organizer.slug pk=doc.pk %}"
+               class="btn btn-default btn-xs" target="_blank">
+                <span class="fa fa-download" aria-hidden="true"></span>
+                {% trans "Download PDF" %}
+            </a>
+        {% elif doc.in_flight %}
+            <span class="text-muted">{% trans "In progress — reload in a moment" %}</span>
+        {% elif action %}
+            <a href="{% url action event=request.event.slug organizer=request.organizer.slug code=order.code %}?next={{ request.path|urlencode }}"
+               class="btn btn-default btn-xs">
+                <span class="fa fa-{% if action_icon %}{{ action_icon }}{% else %}refresh{% endif %}" aria-hidden="true"></span>
+                {{ action_label }}
+            </a>
+        {% endif %}
+    </td>
+</tr>
+{% if doc.status == "error" and doc.error_message %}
+    <tr>
+        <td></td>
+        <td colspan="4" class="text-danger">
+            {{ doc.error_message }}
+            {% if doc.error_items %}
+                <ul>
+                    {% for item in doc.error_items %}<li>{{ item }}</li>{% endfor %}
+                </ul>
+            {% endif %}
+        </td>
+    </tr>
+{% endif %}

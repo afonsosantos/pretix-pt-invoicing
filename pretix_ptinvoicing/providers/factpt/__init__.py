@@ -5,8 +5,13 @@ from django import forms
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
 
-from ...orderdata import bare_tin, client_name
-from ..base import InvoiceProvider, IssuedDocument, ProviderError
+from ...orderdata import bare_tin, client_name, invoice_lines
+from ..base import (
+    InvoiceProvider,
+    IssuedDocument,
+    ProviderError,
+    ProviderUnreachable,
+)
 from .client import FactptAPIError, FactptClient
 from .payload import build_credit_payload, build_payload
 
@@ -20,6 +25,13 @@ class FactptSettingsForm(SettingsForm):
         label=_("API token (x-auth-token)"),
         widget=forms.PasswordInput(render_value=True),
         required=True,
+        # Prices are sent net with 4 decimals so invoices add up to the cent; a 2-decimal
+        # series rejects them, and its allowRound rounds totals off by cents (6 on a
+        # 10-ticket order in the sandbox). The API can't read a series' precision.
+        help_text=_(
+            "The series assigned to this API key in Fact.pt must have 8 decimal places "
+            "of precision. A 2-decimal series rejects the invoices."
+        ),
     )
     factpt_sandbox = forms.BooleanField(
         label=_("Use sandbox environment"),
@@ -50,14 +62,6 @@ class FactptSettingsForm(SettingsForm):
         label=_("Item type"),
         choices=[("service", _("Service")), ("product", _("Product"))],
         initial="service",
-    )
-    factpt_send_client_email = forms.BooleanField(
-        label=_("Send the buyer's e-mail address to Fact.pt"),
-        required=False,
-        help_text=_(
-            "Stores the e-mail on the Fact.pt client record, which lets Fact.pt send the "
-            "document to the buyer. Off by default: pretix already e-mails the buyer."
-        ),
     )
 
 
@@ -98,7 +102,7 @@ class FactptProvider(InvoiceProvider):
         name = client_name(order)
         try:
             matches = client.search_clients(tin or name)
-        except FactptAPIError:
+        except (FactptAPIError, ProviderUnreachable):
             # A failed search is not fatal — fall back to inline client creation.
             return None
 
@@ -141,8 +145,8 @@ class FactptProvider(InvoiceProvider):
             )
 
         configured = Decimal(str(rate.get("value")))
-        for position in order.positions.all():
-            if position.tax_rate != configured:
+        for line in invoice_lines(order):
+            if line.tax_rate != configured:
                 raise ProviderError(
                     _(
                         "VAT mismatch: pretix charged %(pretix)s%% on this order but the "
@@ -151,7 +155,7 @@ class FactptProvider(InvoiceProvider):
                         "or the Fact.pt VAT rate setting."
                     )
                     % {
-                        "pretix": position.tax_rate,
+                        "pretix": line.tax_rate,
                         "factpt": configured,
                         "label": _describe_tax(rate),
                     }
@@ -193,7 +197,7 @@ class FactptProvider(InvoiceProvider):
             return None
         try:
             data = self._client().get_document(document_id).get("data") or {}
-        except FactptAPIError:
+        except (FactptAPIError, ProviderUnreachable):
             logger.warning("factpt: could not read number of document %s", document_id)
             return None
         return data.get("number") or None

@@ -9,12 +9,18 @@
     ({% comment %}, not {# #}: the latter is single-line only and a multi-line one
     renders straight onto the page.)
 {% endcomment %}
-<form class="download-btn-form ptinvoicing-invoice-download"
-      action="{% eventurl event "plugins:pretix_ptinvoicing:order_download" order=order.code secret=order.secret pk=invoice.pk %}"
-      method="get" target="_blank">
-    <button type="submit" class="btn btn-lg btn-default">
-        <span class="fa fa-file-text-o" aria-hidden="true"></span>
-        {% trans "Download invoice" %}
-    </button>
-</form>
+{% for document in documents %}
+    <form class="download-btn-form ptinvoicing-invoice-download"
+          action="{% eventurl event "plugins:pretix_ptinvoicing:order_download" order=order.code secret=order.secret pk=document.pk %}"
+          method="get" target="_blank">
+        <button type="submit" class="btn btn-lg btn-default">
+            <span class="fa fa-file-text-o" aria-hidden="true"></span>
+            {% if document.kind == "credit_note" %}
+                {% trans "Download credit note" %}
+            {% else %}
+                {% trans "Download invoice" %}
+            {% endif %}
+        </button>
+    </form>
+{% endfor %}
 <script type="application/javascript" src="{% static 'pretix_ptinvoicing/presale.js' %}"></script>

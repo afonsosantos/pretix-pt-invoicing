@@ -1,4 +1,10 @@
-from ...orderdata import FINAL_CONSUMER_NIF, bare_tin, client_name, one_line
+from ...orderdata import (
+    FINAL_CONSUMER_NAME,
+    FINAL_CONSUMER_NIF,
+    bare_tin,
+    client_name,
+    one_line,
+)
 
 # Moloni's own field limits — a provider never reaches into a sibling.
 MAX_NAME = 100
@@ -10,7 +16,11 @@ COUNTRY_PT = 1
 
 
 def build_customer(
-    order, payment_method_id, maturity_date_id, custom_field_is_nif=False
+    order,
+    payment_method_id,
+    maturity_date_id,
+    custom_field_is_nif=False,
+    country_id=COUNTRY_PT,
 ):
     """
     The customer to create in Moloni.
@@ -21,16 +31,20 @@ def build_customer(
     """
     ia = getattr(order, "invoice_address", None)
     tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
+    name = client_name(order, MAX_NAME)
 
     return {
         "vat": tin or FINAL_CONSUMER_NIF,
-        "name": client_name(order, MAX_NAME),
+        "name": name,
         "address": one_line(ia and ia.street, MAX_ADDRESS) or "-",
         "city": one_line(ia and ia.city, MAX_CITY) or "-",
         "zip_code": one_line(ia and ia.zipcode, 30) or "1000-001",
-        "country_id": COUNTRY_PT,
+        "country_id": country_id,
         "language_id": 1,
-        "email": one_line(order.email, MAX_NAME),
+        # The anonymous "Consumidor Final" customer is shared by every buyer without a
+        # name (MoloniProvider._resolve_customer_id), so no one buyer's email goes on it.
+        # pretix sends the invoice itself, not Moloni.
+        "email": "" if name == FINAL_CONSUMER_NAME else one_line(order.email, MAX_NAME),
         # The customer's defaults. maturity_date_id and payment_method_id are required
         # real ids (docs); the rest are documented as optional but a real account
         # rejected their absence, so they get neutral values within the ranges its
@@ -45,7 +59,7 @@ def build_customer(
     }
 
 
-def line_tax(position, event_settings, tax_rate):
+def line_tax(line, event_settings, tax_rate):
     """
     The tax part of a line, decided by the rate pretix actually charged on it.
 
@@ -54,7 +68,7 @@ def line_tax(position, event_settings, tax_rate):
     (MoloniProvider._check_taxes). 0%: no tax at all — Moloni rejects a 0 `value` —
     and an exemption reason (e.g. "M07") instead.
     """
-    if position.tax_rate:
+    if line.tax_rate:
         return {
             "taxes": [
                 {
@@ -70,47 +84,46 @@ def line_tax(position, event_settings, tax_rate):
     }
 
 
-def build_catalog_product(position, reference, event_settings, company_id, tax_rate):
+def build_catalog_product(line, reference, event_settings, company_id, tax_rate):
     """
-    products/insert for the pretix item behind `position`, created on its first sale.
-    Type, unit and tax come from the event's settings, like Fact.pt's item defaults.
+    products/insert for the pretix item (or fee kind) behind `line`, created on its
+    first sale. Type, unit and tax come from the event's settings, like Fact.pt's item
+    defaults.
     """
-    product = {
+    return {
         "company_id": company_id,
         "category_id": event_settings.get("moloni_product_category_id", as_type=int),
         "type": event_settings.get("moloni_product_type", as_type=int, default=2),
-        "name": str(position.item.name)[:100],
+        "name": line.name[:100],
         "reference": reference,
         # Only the catalog default; every document line sends its own price.
-        "price": float(position.price - position.tax_value),
+        "price": float(line.net),
         "unit_id": event_settings.get("moloni_unit_id", as_type=int),
         "has_stock": 0,
         "stock": 0,
-        **line_tax(position, event_settings, tax_rate),
+        **line_tax(line, event_settings, tax_rate),
     }
-    return product
 
 
-def build_products(order, event_settings, product_ids, tax_rate):
-    products = []
-    for index, position in enumerate(order.positions.all()):
-        product = {
-            # Required: Moloni only invoices catalog products. One per pretix item,
-            # see MoloniProvider._resolve_product_ids.
-            "product_id": product_ids[position.item_id],
-            "name": str(position.item.name)[:100],
-            "summary": f"pretix-{position.pk}",
+def build_products(lines, event_settings, product_ids, tax_rate):
+    return [
+        {
+            # Required: Moloni only invoices catalog products. One per pretix item or
+            # fee kind, see MoloniProvider._resolve_product_ids.
+            "product_id": product_ids[line.catalog_key],
+            "name": line.name[:100],
+            "summary": line.reference,
             "qty": 1,
-            # ponytail: sent net, because Moloni applies `taxes` on top of `price`. Moloni's
-            # docs don't state net vs gross — settle it with one document against a real
-            # account before trusting this in production.
-            "price": float(position.price - position.tax_value),
+            # ponytail: sent net (4 decimals, see Line.net), because Moloni applies
+            # `taxes` on top of `price`. Moloni's docs don't state net vs gross — settle
+            # it with one document against a real account before trusting this.
+            "price": float(line.net),
             "order": index,
             "discount": 0,
-            **line_tax(position, event_settings, tax_rate),
+            **line_tax(line, event_settings, tax_rate),
         }
-        products.append(product)
-    return products
+        for index, line in enumerate(lines)
+    ]
 
 
 def build_payments(order, event_settings, date):
@@ -128,7 +141,14 @@ def build_payments(order, event_settings, date):
 
 
 def build_document(
-    order, event_settings, customer_id, identifier_id, date, product_ids, tax_rate
+    order,
+    lines,
+    event_settings,
+    customer_id,
+    identifier_id,
+    date,
+    product_ids,
+    tax_rate,
 ):
     return {
         "company_id": event_settings.get("moloni_company_id", as_type=int),
@@ -139,7 +159,7 @@ def build_document(
         "our_reference": identifier_id,
         "your_reference": order.code,
         "status": 1,  # 1 = closed/issued, as opposed to a draft
-        "products": build_products(order, event_settings, product_ids, tax_rate),
+        "products": build_products(lines, event_settings, product_ids, tax_rate),
         "payments": build_payments(order, event_settings, date),
     }
 
