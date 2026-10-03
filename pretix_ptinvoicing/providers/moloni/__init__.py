@@ -152,14 +152,6 @@ class MoloniProvider(InvoiceProvider):
         return None
 
     @property
-    def in_use(self):
-        """Saved as the event's provider, and with everything it needs to issue."""
-        return (
-            self.settings.get("ptinvoicing_provider") == self.identifier
-            and self.is_configured
-        )
-
-    @property
     def redirect_uri(self):
         # Shown on the settings page: it's what the admin registers in Moloni.
         from .views import callback_url

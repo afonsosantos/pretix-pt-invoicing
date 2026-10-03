@@ -11,20 +11,6 @@
             <p class="form-control-static text-success">
                 <span class="fa fa-check" aria-hidden="true"></span> {% trans "Connected" %}
             </p>
-            {% if not provider.in_use %}
-                {% comment %}
-                    Connecting saves the credentials but doesn't make Moloni the event's
-                    provider, and the company, series and the rest can only be picked once
-                    connected — so issuance waits on a Save the admin can easily miss.
-                {% endcomment %}
-                <div class="alert alert-info">
-                    {% blocktrans trimmed %}
-                        Not in use yet: choose the company and the other Moloni settings
-                        below, then click <strong>Save</strong>. No documents are issued
-                        through Moloni until you do.
-                    {% endblocktrans %}
-                </div>
-            {% endif %}
         {% elif provider.connection_state == "expired" %}
             <div class="alert alert-danger">
                 {% blocktrans trimmed %}

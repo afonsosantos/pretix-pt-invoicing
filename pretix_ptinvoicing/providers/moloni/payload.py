@@ -1,4 +1,10 @@
-from ...orderdata import FINAL_CONSUMER_NIF, bare_tin, client_name, one_line
+from ...orderdata import (
+    FINAL_CONSUMER_NAME,
+    FINAL_CONSUMER_NIF,
+    bare_tin,
+    client_name,
+    one_line,
+)
 
 # Moloni's own field limits — a provider never reaches into a sibling.
 MAX_NAME = 100
@@ -25,16 +31,20 @@ def build_customer(
     """
     ia = getattr(order, "invoice_address", None)
     tin = bare_tin(order, custom_field_is_nif=custom_field_is_nif)
+    name = client_name(order, MAX_NAME)
 
     return {
         "vat": tin or FINAL_CONSUMER_NIF,
-        "name": client_name(order, MAX_NAME),
+        "name": name,
         "address": one_line(ia and ia.street, MAX_ADDRESS) or "-",
         "city": one_line(ia and ia.city, MAX_CITY) or "-",
         "zip_code": one_line(ia and ia.zipcode, 30) or "1000-001",
         "country_id": country_id,
         "language_id": 1,
-        "email": one_line(order.email, MAX_NAME),
+        # The anonymous "Consumidor Final" customer is shared by every buyer without a
+        # name (MoloniProvider._resolve_customer_id), so no one buyer's email goes on it.
+        # pretix sends the invoice itself, not Moloni.
+        "email": "" if name == FINAL_CONSUMER_NAME else one_line(order.email, MAX_NAME),
         # The customer's defaults. maturity_date_id and payment_method_id are required
         # real ids (docs); the rest are documented as optional but a real account
         # rejected their absence, so they get neutral values within the ranges its

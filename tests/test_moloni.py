@@ -542,8 +542,8 @@ def test_buyers_without_nif_reuse_the_final_consumer_with_their_name(
         order,
         moloni_event,
         [
-            {"customer_id": 31, "vat": "999999990", "name": "dummy@example.org"},
-            {"customer_id": 30, "vat": "999999990", "name": "dummy@example.org"},
+            {"customer_id": 31, "vat": "999999990", "name": "Consumidor Final"},
+            {"customer_id": 30, "vat": "999999990", "name": "Consumidor Final"},
             {"customer_id": 29, "vat": "999999990", "name": "Someone else"},
         ],
     )
@@ -871,14 +871,17 @@ def test_settings_page_asks_for_a_save_until_moloni_is_in_use(
         oauth_event.settings.moloni_refresh_token = "ref"
         oauth_event.settings.ptinvoicing_provider = "factpt"
     content = logged_in_client.get(url).content.decode()
-    assert "Not in use yet" in content
+    assert "fill in the Moloni settings" in content
     # The redirect URI comes with a copy button.
     assert 'class="btn btn-default btn-xs ptinvoicing-copy"' in content
     assert "/control/ptinvoicing/moloni/callback/" in content
 
     with scopes_disabled():
         oauth_event.settings.ptinvoicing_provider = "moloni"
-    assert "Not in use yet" not in logged_in_client.get(url).content.decode()
+    content = logged_in_client.get(url).content.decode()
+    assert "fill in the Moloni settings" not in content
+    # Every provider's fieldset is on the page; the one not chosen still says so.
+    assert "fill in the Fact.pt settings" in content
 
 
 @pytest.mark.django_db

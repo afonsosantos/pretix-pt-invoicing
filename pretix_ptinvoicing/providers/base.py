@@ -82,6 +82,14 @@ class InvoiceProvider:
         """False = plugin enabled but not set up yet; tasks.py then skips silently."""
         raise NotImplementedError
 
+    @property
+    def in_use(self):
+        """Saved as the event's provider, and with everything it needs to issue."""
+        return (
+            self.settings.get("ptinvoicing_provider") == self.identifier
+            and self.is_configured
+        )
+
     def issue(self, order, identifier_id):
         """
         Issue the document for `order` and return an IssuedDocument.

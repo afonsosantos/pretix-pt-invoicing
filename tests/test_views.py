@@ -66,6 +66,20 @@ def test_post_settings_page_saves(logged_in_client, event):
 
 
 @pytest.mark.django_db
+def test_settings_page_asks_for_a_save_until_factpt_is_in_use(logged_in_client, event):
+    url = SETTINGS_URL.format(event.organizer.slug, event.slug)
+    # Chosen but without a token: still not in use.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+    assert "fill in the Fact.pt settings" in logged_in_client.get(url).content.decode()
+
+    with scopes_disabled():
+        event.settings.factpt_token = "tok"
+    content = logged_in_client.get(url).content.decode()
+    assert "fill in the Fact.pt settings" not in content
+
+
+@pytest.mark.django_db
 def test_settings_page_requires_permission(client, event):
     with scopes_disabled():
         User.objects.create_user("noaccess@example.org", "dummy")

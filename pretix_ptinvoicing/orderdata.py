@@ -15,6 +15,7 @@ from decimal import Decimal
 logger = logging.getLogger(__name__)
 
 FINAL_CONSUMER_NIF = "999999990"
+FINAL_CONSUMER_NAME = "Consumidor Final"
 
 
 @dataclass
@@ -132,9 +133,10 @@ def client_name(order, limit=100):
     Who the invoice is made out to.
 
     Neither provider has a separate company field, so a business buyer's company has to be
-    the name — that is the entity being invoiced. Falls back to the person, then the email.
+    the name — that is the entity being invoiced. Falls back to the person, then to
+    "Consumidor Final" — never the email, which isn't a name to print on an invoice.
     """
     ia = getattr(order, "invoice_address", None)
     company = ia and getattr(ia, "company", None)
     person = ia and getattr(ia, "name", None)
-    return one_line(company or person or order.email or "Consumidor Final", limit)
+    return one_line(company or person, limit) or FINAL_CONSUMER_NAME

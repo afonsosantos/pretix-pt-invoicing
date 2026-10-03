@@ -63,6 +63,21 @@
             <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}"
                       data-lookup-triggers="{{ block.provider.lookup_triggers|join:" " }}">
                 <legend>{{ block.label }}</legend>
+                {% if not block.provider.in_use %}
+                    {% comment %}
+                        Picking a provider card only shows its settings; nothing is issued
+                        through it until it's saved with everything it needs (Moloni's
+                        company and series can only be picked once connected) — a Save the
+                        admin can easily miss.
+                    {% endcomment %}
+                    <div class="alert alert-info">
+                        {% blocktrans trimmed with provider=block.label %}
+                            Not in use yet: fill in the {{ provider }} settings below, then
+                            click <strong>Save</strong>. No documents are issued through
+                            {{ provider }} until you do.
+                        {% endblocktrans %}
+                    </div>
+                {% endif %}
                 {% if block.provider.settings_template %}
                     {% include block.provider.settings_template with provider=block.provider %}
                 {% endif %}

@@ -514,20 +514,20 @@ def test_final_consumer_reuses_an_existing_client_instead_of_duplicating(
     mock_factpt_taxes()
     responses.add(
         responses.GET,
-        f"https://api.fact.pt/clients?search={quote(order.email)}",
+        f"https://api.fact.pt/clients?search={quote('Consumidor Final')}",
         json={
             "AppStatusCode": 200,
             "AppResponse": {
                 "data": [
                     {
                         "id": "9987",
-                        "name": order.email,
+                        "name": "Consumidor Final",
                         "tin": "999999990",
                         "isFinalConsumer": True,
                     },
                     {
                         "id": "9985",
-                        "name": order.email,
+                        "name": "Consumidor Final",
                         "tin": "999999990",
                         "isFinalConsumer": True,
                     },

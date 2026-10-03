@@ -391,11 +391,23 @@ event settings in one flat hierarkey namespace shared with core and every other 
     (core uses it as `gross_value`, `pretix/base/services/invoices.py:308`). Verified against the
     sandbox: `price: "15.00"` with a 23% `taxId` came back as `gross: "18.45"`. Sending the gross
     price would issue every VAT-bearing invoice above what the buyer actually paid.
+    **Series precision:** each Fact.pt API key is tied to one series of either 2 or 8 decimal
+    places, and nothing in the API reports which. A 2-decimal series rejects longer prices
+    (`"price: Trying to use an item having more than 2 decimal digits, in an incompatible
+    series."`) unless `document.allowRound` is sent — and allowRound just rounds, with Fact.pt
+    taking VAT on the document total, so the error grows with the line count: in the sandbox
+    64.00 → 64.01, 10 × 35.00 → 350.06. A series of 2 decimals can't invoice e.g. a single
+    35.00 at 23% exactly at all. So the plugin **requires an 8-decimal series** — stated in the
+    `factpt_token` help text — always sends the 4-decimal `Line.net`, and never sends allowRound.
+    (A short-lived `factpt_series_decimals` 2/8 option was removed again; an event that saved
+    it keeps an unused setting.)
   - `client_name(order)` and the `_one_line(value, limit)` helper — Fact.pt's client block has no
     company field, so a business buyer's company has to go in `name` (that is the entity the
-    invoice is made out to), falling back to the person and then the e-mail. Every text field is
-    collapsed to one line and truncated to Fact.pt's documented limits (`name`/`address` 100,
-    `city` 50, `email` 100, all "1 linha"). The flattening is not cosmetic: pretix's `street` is a
+    invoice is made out to), falling back to the person and then "Consumidor Final" — never the
+    e-mail. The e-mail is never sent to Fact.pt (pretix e-mails the documents itself). A PT client
+    with no zip gets `0000-000`: Fact.pt rejects `-` ("The zip is not a valid PT zip."). Every
+    text field is collapsed to one line and truncated to Fact.pt's documented limits
+    (`name`/`address` 100, `city` 50, all "1 linha"). The flattening is not cosmetic: pretix's `street` is a
     `TextField`, so a buyer pressing Enter in the address box would otherwise put a newline in
     `address` and have the whole document rejected — as a `ProviderError`, i.e. terminally.
   - `build_payload(order, event_settings, identifier_id, client_id=None)` — takes `identifier_id`

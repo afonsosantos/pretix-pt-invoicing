@@ -25,6 +25,13 @@ class FactptSettingsForm(SettingsForm):
         label=_("API token (x-auth-token)"),
         widget=forms.PasswordInput(render_value=True),
         required=True,
+        # Prices are sent net with 4 decimals so invoices add up to the cent; a 2-decimal
+        # series rejects them, and its allowRound rounds totals off by cents (6 on a
+        # 10-ticket order in the sandbox). The API can't read a series' precision.
+        help_text=_(
+            "The series assigned to this API key in Fact.pt must have 8 decimal places "
+            "of precision. A 2-decimal series rejects the invoices."
+        ),
     )
     factpt_sandbox = forms.BooleanField(
         label=_("Use sandbox environment"),
@@ -55,14 +62,6 @@ class FactptSettingsForm(SettingsForm):
         label=_("Item type"),
         choices=[("service", _("Service")), ("product", _("Product"))],
         initial="service",
-    )
-    factpt_send_client_email = forms.BooleanField(
-        label=_("Send the buyer's e-mail address to Fact.pt"),
-        required=False,
-        help_text=_(
-            "Stores the e-mail on the Fact.pt client record, which lets Fact.pt send the "
-            "document to the buyer. Off by default: pretix already e-mails the buyer."
-        ),
     )
 
 

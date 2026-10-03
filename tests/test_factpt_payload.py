@@ -41,7 +41,9 @@ def test_build_client_block_without_invoice_address_is_final_consumer(order):
     client = build_client_block(order)
     assert client["finalConsumer"] is True
     assert "tin" not in client
-    assert client["name"] == order.email
+    assert client["name"] == "Consumidor Final"
+    # Fact.pt rejects "-" as a PT zip.
+    assert client["zip"] == "0000-000"
     # forceTin means "duplicate a final consumer whose name+country already exists", so
     # sending it here created a new client on every issuance until Fact.pt could no longer
     # resolve one ("Multiple clients with same tin. Specify an ID."). Reuse is handled by
@@ -151,9 +153,9 @@ def test_build_client_block_flattens_and_truncates_to_factpt_limits(order):
 
 
 @pytest.mark.django_db
-def test_build_client_block_sends_email_only_when_enabled(order):
+def test_build_client_block_never_sends_the_email(order):
+    # pretix e-mails the document itself (the e-mail settings on the main page).
     assert "email" not in build_client_block(order)
-    assert build_client_block(order, send_email=True)["email"] == order.email
 
 
 @pytest.mark.django_db
