@@ -201,3 +201,49 @@ def test_manual_only_issues_nothing_on_payment_or_refund(
     # No HTTP mock registered: a credit() call would blow up the test.
     complete(_make_refund(invoiced_order, Decimal("23.00")))
     assert not _credit_notes().exists()
+
+
+@pytest.mark.django_db
+def test_billing_change_after_invoicing_alerts_and_reissues_nothing(invoiced_order):
+    from django.core import mail as django_mail
+    from pretix.base.models import InvoiceAddress
+
+    from pretix_ptinvoicing.orderdata import billing_data
+    from pretix_ptinvoicing.signals import ptinvoicing_order_modified
+
+    order, event = invoiced_order, invoiced_order.event
+    with scopes_disabled():
+        event.settings.contact_mail = "org@example.org"
+        # Even with pretix's own auto-reissue on: never without staff approval.
+        event.settings.invoice_reissue_after_modify = True
+        ia = InvoiceAddress.objects.create(order=order, street="Rua A")
+        order.refresh_from_db()
+        IssuedInvoice.objects.update(billing_data=billing_data(order))
+
+        ptinvoicing_order_modified(event, order=order)  # nothing changed
+        assert not django_mail.outbox
+
+        ia.street = "Rua B"
+        ia.save()
+        order.refresh_from_db()
+        with mock.patch("pretix_ptinvoicing.signals.transaction.on_commit") as commit:
+            ptinvoicing_order_modified(event, order=order)
+
+    assert not commit.called
+    assert len(django_mail.outbox) == 1
+    assert django_mail.outbox[0].to == ["org@example.org"]
+    assert order.code in django_mail.outbox[0].subject
+    assert IssuedInvoice.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_checkout_assets_load_only_with_the_custom_nif_field(event, rf):
+    from pretix_ptinvoicing.signals import ptinvoicing_html_head
+
+    request = rf.get("/")
+    assert ptinvoicing_html_head(event, request=request) == ""
+    event.settings.ptinvoicing_nif_custom_field = True
+    head = ptinvoicing_html_head(event, request=request)
+    assert "checkout.js" in head and "checkout.css" in head
+    request.pci_dss_payment_page = True
+    assert ptinvoicing_html_head(event, request=request) == ""

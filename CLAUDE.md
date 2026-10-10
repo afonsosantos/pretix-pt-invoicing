@@ -46,12 +46,27 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `bare_tin` strips spaces, dots and dashes first ("PT 237.892.294" is a valid NIF, not a final
   consumer). `invoice_lines(order)` is what both providers invoice: every position **and every
   fee** (payment/service/shipping… — leaving fees out issued invoices below the order total), as
-  `Line`s. `Line.net` is the net unit price **to 4 decimals, derived from gross and rate**, not
-  `price - tax_value`: pretix rounds `tax_value` to cents, the provider adds its VAT back on top,
-  and a cent-rounded net came back a cent high for ~1 price in 5 at 23% (15.00 → 12.20 → 15.01).
-  `tests/test_factpt_payload.py` sweeps 0.01–200.00 at 23/13/6/0% to prove the round trip. The
-  4-decimal net itself is **unverified against either provider's sandbox** — confirm 15.00/23%
-  comes back as 15.00 before trusting it.
+  `Line`s — **identical tickets share one line with `qty`** (same name/item/price/rate), one
+  per position only when the buyer ticked "itemize by attendee". `Line.net` is the net unit
+  price **to 8 decimals, set by `set_nets()` per VAT rate across the whole document** (on line
+  totals, net × qty), not `price - tax_value`: pretix rounds `tax_value` to cents, the
+  provider adds its VAT back on top, and no 2-decimal net gets 15.00 at 23% back (12.19 → 14.99,
+  12.20 → 15.01). Nor each line's own exact net: a real Moloni document (L0YCM, pretix prices
+  *including* VAT, 35.00 + 29.00 at 23%) showed Moloni takes the **total from the unrounded nets,
+  the incidence from the nets rounded per line, and VAT as the difference** — 28.4553 + 23.5772
+  printed incidence 52.04 with VAT 11.96, which doesn't add up. `set_nets` picks the cents each
+  line rounds to (the exact total rounded, shared by largest remainder: 28.45 + 23.58 = 52.03),
+  moves only a line that doesn't already round there (to within ±0.0049 of its cent), and
+  redistributes only if the document total would otherwise miss what was paid.
+  **Moloni stores prices to 5 decimals** and prints "PVP Unit." (net + VAT) from them, so a
+  tax-inclusive 35.00 at 23% prints **34,99999** at best — 35/1.23 repeats forever, no
+  5-decimal net gives 35,00000. Incidence/VAT/total are right (28,46 + 6,54 = 35,00, the same
+  split pretix's own invoice prints). This is inherent, not a bug: only whole-cent nets (pretix's
+  "price includes tax" off — which also changes what the buyer pays) print clean. Verified with
+  a Moloni **draft** (status 0, then `invoiceReceipts/delete`) for 3 × 35.00 + 2 × 29.00:
+  incidence 132,52, VAT 30,48, total 163,00. `tests/test_factpt_payload.py` simulates that
+  (5-decimal storage, per-line rounded incidence) for every price 0.01–200.00 at 23/13/6/0%,
+  qty 1 and 3, and 5000 random multi-line documents.
 - `pretix_ptinvoicing/models.py` — `IssuedInvoice`: one row per issuance *attempt* against an `Order`
   for one provider (`order` FK, not one-to-one — a retry after a network failure reuses the same row
   via `get_or_create(order=..., provider=..., identifier_id=...)`, but a config change that alters
@@ -414,6 +429,59 @@ event settings in one flat hierarkey namespace shared with core and every other 
     from the caller (the core builds it) and sends it as `document.identifierId`. Fact.pt rejects a
     second document with the same `identifierId`, which is the actual duplicate-issuance guard.
 
+### Billing data, checkout and payment methods
+
+- **Billing changes after invoicing — alert only, never automatic.** Each successful row stores
+  `billing_data` (`orderdata.billing_data`: name, NIF, street, zip, city, country — what the
+  invoice was made out with). `ptinvoicing_order_modified` (pretix's `order_modified`, sent when
+  the buyer edits their order) compares it with the order's current data and e-mails the event's
+  `contact_mail`; the order panel shows the same warning. Approving = the existing "Issue credit
+  note" then "Issue invoice now" buttons. **Never credit and reissue without staff approval** —
+  the owner's explicit rule, regardless of pretix's own `invoice_reissue_after_modify` (which only
+  ever touches pretix's own `order.invoices` anyway). Rows issued before `0005` have no
+  `billing_data` and never warn. The e-mail repeats on every later save while the data differs.
+- **Moloni alternate addresses.** A reused Moloni customer (by NIF, or the shared final consumer)
+  is never overwritten. When its stored `address`/`city`/`zip_code`/`country_id` differ from the
+  order's, `_alternate_address_id` finds or inserts a `customerAlternateAddresses` entry — `code`
+  is `pretix-` + a hash of the address, so the same address is reused — and the document carries
+  `alternate_address_id`. **Unconfirmed against a real account**: that `getByVat` returns those
+  address fields (if it doesn't, every reused customer gets one alternate address per distinct
+  address), and that Moloni prints the alternate address as the billing address. Real documents
+  did confirm the need: an order with a changed address was printed with the customer's old one.
+  **Blank billing data never gets one**: `build_customer`'s `-` placeholders mean "no address",
+  so the document is just Moloni's own "Consumidor Final" (stored as `Desconhecido`/`0000-000`),
+  as on the real L0YCM — comparing `-` with `Desconhecido` would otherwise add an address of ours.
+- **Itemize by attendee** (`ptinvoicing_itemize_option`, off by default): adds a checkbox to the
+  checkout's contact form via `contact_form_fields`; pretix stores it in
+  `order.meta_info["contact_form_data"]["ptinvoicing_itemize"]`, and `invoice_lines` then names
+  each position `"<item> — <attendee>"`. Lines were already one per position.
+- **One NIF field at checkout**: with `ptinvoicing_nif_custom_field` on, the custom field is the
+  NIF for everyone, so `html_head` loads `checkout.js`/`checkout.css`, which hide *and disable*
+  pretix's other candidates — `bare_tin` then reads the custom field:
+  `internal_reference` always — **pretix's own pt_PT catalog translates "Internal reference" as
+  "NIF (Número de Contribuinte)"**, so PT businesses saw a second "NIF" field that was really
+  the purchase-order reference (and the event had `invoice_address_vatid` off, so no real VAT
+  ID field at all) — and `vat_id` only while the address country is PT (or there's no country
+  field): a foreign EU business still needs the VAT ID for reverse charge. In dev, a browser
+  that cached the old `checkout.js` keeps running it (no hashed filenames under runserver).
+  Hidden with a class whose rule is `display:none
+  !important`, because pretix's own JS (`data-display-dependency`) re-shows the field with an
+  inline `display` that `hidden`/`style` would lose to. An event with "VAT ID required" would
+  reject PT businesses. Skipped on PCI payment pages.
+- **Moloni payment-method table**: `MoloniSettingsForm.__init__` adds an optional
+  `moloni_payment_method_id_<pretix provider>` per enabled pretix payment provider (not `free`,
+  not meta providers), rendered as a table by `payment_methods.html` (excluded from
+  `bootstrap_form` via `table_fields`) and filled by the same `paymentMethods/getAll` lookup.
+  `lookups()` takes the rows from `mapped_payment_providers(event)`, **not from the POST**:
+  `settings.js` only posts non-empty inputs, so empty rows stayed number inputs. Each row's
+  options start with "— default —" (empty), or the dropdown would preselect a real method and
+  the next Save would store it unasked.
+  `build_payments` records confirmed payments grouped by mapped method (unmapped → the default);
+  if they don't add up to `order.total` exactly, the whole total goes under the largest one. A
+  `manual` payment (order marked paid in the backend) counts as the order's latest other payment
+  attempt — the Multibanco reference paid but never confirmed automatically is Multibanco.
+  The Moloni line has no `summary`: Moloni printed it ("pretix-33") under the product name.
+
 ### E-mailing the documents
 
 pretix's own order e-mails will never carry either document: the "attach invoices" machinery
@@ -577,7 +645,7 @@ Since `pretix_ptinvoicing` is a real Django app, Django's i18n machinery discove
 no pretix-specific wiring needed, `{% load i18n %}` / `_()` / `gettext_lazy()` calls throughout the
 codebase just work once a `.mo` file exists.
 
-The pt_PT catalog is complete (`msgfmt --statistics`: 165 translated, 0 fuzzy, 0 untranslated).
+The pt_PT catalog is complete (`msgfmt --statistics`: 183 translated, 0 fuzzy, 0 untranslated).
 "Provider" is "serviço de faturação", never "fornecedor": on an invoice, *fornecedor* is the
 seller. "Retry issuance" is "Tentar emitir novamente", not "Reemitir" (which reads as issuing
 again).

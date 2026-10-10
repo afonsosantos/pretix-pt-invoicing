@@ -71,6 +71,9 @@ class IssuedInvoice(models.Model):
     # Whether the buyer was e-mailed the PDF: None = not attempted (e-mail off).
     email_sent = models.BooleanField(null=True, blank=True)
 
+    # The buyer data it was issued with (orderdata.billing_data), to spot later changes.
+    billing_data = models.JSONField(null=True, blank=True)
+
     class Meta:
         ordering: ClassVar = ["-created"]
         unique_together: ClassVar = [("provider", "identifier_id")]

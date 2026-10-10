@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-03 16:11+0100\n"
+"POT-Creation-Date: 2026-10-08 23:47+0100\n"
 "PO-Revision-Date: 2026-10-01 23:00+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -60,14 +60,28 @@ msgid ""
 "have nowhere to enter a tax number. Turn this on after adding a custom "
 "recipient field labelled e.g. \"NIF\" under Settings → Invoicing; it is then "
 "used as the tax number when the VAT ID field is empty. Portuguese numbers "
-"that fail their check digit are ignored, not sent."
+"that fail their check digit are ignored, not sent. It then is the one tax "
+"number field at checkout for Portuguese addresses: pretix's own VAT ID field "
+"is hidden there, businesses included."
 msgstr ""
 "O pretix só oferece o campo de NIF a clientes empresa, pelo que os "
 "particulares não têm onde o indicar. Ligue esta opção depois de criar um "
 "campo personalizado de destinatário com o rótulo \"NIF\" em Definições → "
 "Faturação; passa então a ser usado como NIF sempre que o campo de NIF "
 "estiver vazio. Os números portugueses cujo dígito de controlo não confira "
-"são ignorados, não são enviados."
+"são ignorados, não são enviados. Passa a ser o único campo de NIF no "
+"checkout para moradas portuguesas: o campo de NIF do próprio pretix fica "
+"oculto, também para empresas."
+
+msgid "Let buyers itemize the invoice by attendee"
+msgstr "Permitir ao comprador discriminar a fatura por participante"
+
+msgid ""
+"Adds a checkbox at checkout. When ticked, each invoice line carries the "
+"attendee's name next to the product."
+msgstr ""
+"Acrescenta uma opção no checkout. Quando marcada, cada linha da fatura "
+"indica o nome do participante junto ao produto."
 
 msgid "Show the invoice on the buyer's order page"
 msgstr "Mostrar a fatura na página da encomenda do comprador"
@@ -128,6 +142,30 @@ msgstr ""
 "\n"
 "a ligação entre {event} e {provider} expirou, pelo que não serão emitidas "
 "faturas até voltar a ligar aqui:\n"
+"\n"
+"{url}\n"
+
+#, python-brace-format
+msgid "Order {code}: billing details changed after invoicing"
+msgstr "Encomenda {code}: dados de faturação alterados depois de faturada"
+
+#, python-brace-format
+msgid ""
+"Hello,\n"
+"\n"
+"the buyer of order {code} changed their billing details after invoice-"
+"receipt {number} was issued. An issued document can't be changed: to accept "
+"the change, issue a credit note and then a new invoice from the order's "
+"page:\n"
+"\n"
+"{url}\n"
+msgstr ""
+"Olá,\n"
+"\n"
+"o comprador da encomenda {code} alterou os dados de faturação depois de "
+"emitida a fatura-recibo {number}. Um documento emitido não pode ser "
+"alterado: para aceitar a alteração, emita uma nota de crédito e depois uma "
+"nova fatura na página da encomenda:\n"
 "\n"
 "{url}\n"
 
@@ -346,6 +384,9 @@ msgstr ""
 msgid "Moloni did not return a customer id."
 msgstr "O Moloni não devolveu um id de cliente."
 
+msgid "Moloni did not return an alternate address id."
+msgstr "O Moloni não devolveu um id de morada alternativa."
+
 #, python-format
 msgid "Moloni has no country with code %(code)s."
 msgstr "O Moloni não tem nenhum país com o código %(code)s."
@@ -400,6 +441,9 @@ msgstr "Ligue primeiro ao Moloni ou preencha as credenciais do Moloni."
 
 msgid "— choose a company —"
 msgstr "— escolha uma empresa —"
+
+msgid "— default —"
+msgstr "— predefinida —"
 
 #, python-format
 msgid "Could not reach Moloni: %(error)s"
@@ -461,6 +505,12 @@ msgid ""
 msgstr ""
 "Ligado ao Moloni. Agora escolha a empresa e as restantes definições do "
 "Moloni e clique em Guardar — nada é emitido pelo Moloni até o fazer."
+
+msgid "Itemize the invoice by attendee"
+msgstr "Discriminar a fatura por participante"
+
+msgid "Each ticket's line on the invoice shows the attendee's name."
+msgstr "A linha de cada bilhete na fatura indica o nome do participante."
 
 msgid "Invoicing (PT)"
 msgstr "Faturação PT"
@@ -609,6 +659,15 @@ msgstr ""
 msgid "Open the invoicing settings"
 msgstr "Abrir as definições de faturação"
 
+#, python-format
+msgid ""
+"The buyer changed their billing details after invoice %(number)s was issued. "
+"To accept the change, issue a credit note and then a new invoice."
+msgstr ""
+"O comprador alterou os dados de faturação depois de emitida a fatura "
+"%(number)s. Para aceitar a alteração, emita uma nota de crédito e depois uma "
+"nova fatura."
+
 msgid "Invoices are only issued once the order is paid."
 msgstr "As faturas só são emitidas depois de a encomenda estar paga."
 
@@ -632,6 +691,22 @@ msgstr "Ainda não foi emitida nenhuma fatura para esta encomenda."
 
 msgid "Issue invoice now"
 msgstr "Emitir fatura agora"
+
+msgid "Payment methods"
+msgstr "Formas de pagamento"
+
+msgid "pretix"
+msgstr "pretix"
+
+msgid "Moloni"
+msgstr "Moloni"
+
+msgid ""
+"Each payment is recorded on the invoice under the Moloni method it's mapped "
+"to. Leave one empty to use the default payment method."
+msgstr ""
+"Cada pagamento é registado na fatura com a forma de pagamento do Moloni "
+"associada. Deixe vazio para usar a forma de pagamento predefinida."
 
 msgid ""
 "Pick the invoicing provider to issue invoice-receipts with once payment is "

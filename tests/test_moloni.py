@@ -19,6 +19,10 @@ from pretix_ptinvoicing.tasks import issue_credit_note, issue_invoice
 GRANT = "https://api.moloni.pt/v1/grant/"
 API = "https://api.moloni.pt/v1/{}/"
 
+# What build_customer sends for a buyer with no address: a customer stored with it needs
+# no alternate address.
+STORED = {"address": "-", "city": "-", "zip_code": "1000-001", "country_id": 1}
+
 
 def mock_grant(access="tok-1", refresh="ref-1", expires_in=3600):
     responses.add(
@@ -165,7 +169,7 @@ def test_existing_customer_is_reused_by_vat(moloni_event, order, position):
     responses.add(
         responses.POST,
         API.format("customers/getByVat"),
-        json=[{"customer_id": 88, "vat": "237892294"}],
+        json=[{"customer_id": 88, "vat": "237892294", **STORED}],
         status=200,
     )
     responses.add(
@@ -179,7 +183,74 @@ def test_existing_customer_is_reused_by_vat(moloni_event, order, position):
 
     called = [c.request.url for c in responses.calls]
     assert not any("customers/insert" in url for url in called)
-    assert sent_to("invoiceReceipts/insert")["customer_id"] == 88
+    document = sent_to("invoiceReceipts/insert")
+    assert document["customer_id"] == 88
+    assert "alternate_address_id" not in document
+
+
+def _issue_to_moved_customer(event, order, alternates):
+    with scopes_disabled():
+        InvoiceAddress.objects.create(
+            order=order,
+            vat_id="PT237892294",
+            country="PT",
+            street="Rua Nova 1",
+            zipcode="4000-001",
+            city="Porto",
+        )
+    order.refresh_from_db()
+    mock_grant()
+    mock_existing_product()
+    responses.add(
+        responses.POST,
+        API.format("customers/getByVat"),
+        json=[{"customer_id": 88, "vat": "237892294", **STORED}],
+    )
+    responses.add(
+        responses.POST,
+        API.format("customerAlternateAddresses/getAll"),
+        json=alternates,
+    )
+    responses.add(
+        responses.POST,
+        API.format("customerAlternateAddresses/insert"),
+        json={"valid": 1, "address_id": 5},
+    )
+    responses.add(
+        responses.POST, API.format("invoiceReceipts/insert"), json={"document_id": 1}
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_new_address_goes_in_as_alternate_address(moloni_event, order, position):
+    # The customer is shared by every order with that NIF: never overwritten.
+    _issue_to_moved_customer(moloni_event, order, [])
+
+    assert not _inserted("customers/update")
+    alternate = sent_to("customerAlternateAddresses/insert")
+    assert alternate["customer_id"] == 88
+    assert alternate["address"] == "Rua Nova 1"
+    assert alternate["zip_code"] == "4000-001"
+    assert alternate["code"].startswith("pretix-")
+    assert sent_to("invoiceReceipts/insert")["alternate_address_id"] == 5
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_known_alternate_address_is_reused(moloni_event, order, position):
+    _issue_to_moved_customer(moloni_event, order, [])
+    code = sent_to("customerAlternateAddresses/insert")["code"]
+    responses.reset()
+
+    with scopes_disabled():
+        IssuedInvoice.objects.all().delete()
+        order.invoice_address.delete()
+    _issue_to_moved_customer(moloni_event, order, [{"address_id": 9, "code": code}])
+
+    assert not _inserted("customerAlternateAddresses/insert")
+    assert sent_to("invoiceReceipts/insert")["alternate_address_id"] == 9
 
 
 @pytest.mark.django_db
@@ -496,7 +567,8 @@ def test_missing_catalog_product_is_created_once_per_item(
     assert created["exemption_reason"] == "M07"  # 0% lines, like the item's sales
     assert "taxes" not in created
     lines = sent_to("invoiceReceipts/insert")["products"]
-    assert [line["product_id"] for line in lines] == [77, 77]
+    # Two identical tickets: one line, qty 2.
+    assert [(line["product_id"], line["qty"]) for line in lines] == [(77, 2)]
 
 
 def _issue_with_customers(order, event, found, address=None):
@@ -534,6 +606,34 @@ def _inserted(endpoint):
 
 @pytest.mark.django_db
 @responses.activate
+def test_blank_billing_data_is_just_consumidor_final(moloni_event, order, position):
+    # L0YCM on a real account: nothing filled in, issued to Moloni's own "Consumidor
+    # Final", stored with its "Desconhecido" address — no alternate address of ours.
+    _issue_with_customers(
+        order,
+        moloni_event,
+        [
+            {
+                "customer_id": 161091328,
+                "vat": "999999990",
+                "name": "Consumidor Final",
+                "address": "Desconhecido",
+                "city": "Desconhecido",
+                "zip_code": "0000-000",
+                "country_id": 1,
+            }
+        ],
+    )
+
+    assert not _inserted("customers/insert")
+    assert not _inserted("customerAlternateAddresses/getAll")
+    document = sent_to("invoiceReceipts/insert")
+    assert document["customer_id"] == 161091328
+    assert "alternate_address_id" not in document
+
+
+@pytest.mark.django_db
+@responses.activate
 def test_buyers_without_nif_reuse_the_final_consumer_with_their_name(
     moloni_event, order, position
 ):
@@ -542,9 +642,19 @@ def test_buyers_without_nif_reuse_the_final_consumer_with_their_name(
         order,
         moloni_event,
         [
-            {"customer_id": 31, "vat": "999999990", "name": "Consumidor Final"},
-            {"customer_id": 30, "vat": "999999990", "name": "Consumidor Final"},
-            {"customer_id": 29, "vat": "999999990", "name": "Someone else"},
+            {
+                "customer_id": 31,
+                "vat": "999999990",
+                "name": "Consumidor Final",
+                **STORED,
+            },
+            {
+                "customer_id": 30,
+                "vat": "999999990",
+                "name": "Consumidor Final",
+                **STORED,
+            },
+            {"customer_id": 29, "vat": "999999990", "name": "Someone else", **STORED},
         ],
     )
 
@@ -921,6 +1031,13 @@ def test_lookups_list_companies_exemptions_and_per_company_fields(oauth_event):
     with_company = provider.lookups({"moloni_company_id": "2"})
     assert with_company["moloni_document_set_id"] == [{"id": 30, "label": "FR2026"}]
     assert with_company["moloni_payment_method_id"] == [{"id": 5, "label": "MB Way"}]
+    # The payment-method table: a row per active pretix method even though nothing
+    # was posted for it (settings.js skips empty inputs), blank = the default first.
+    assert with_company["moloni_payment_method_id_giftcard"] == [
+        {"id": "", "label": "— default —"},
+        {"id": 5, "label": "MB Way"},
+    ]
+    assert len([c for c in responses.calls if "paymentMethods" in c.request.url]) == 1
     assert with_company["moloni_maturity_date_id"] == [
         {"id": 9, "label": "Pronto pagamento"}
     ]
@@ -1087,3 +1204,80 @@ def test_document_number_reads_series_and_number(
     )
     assert MoloniProvider(moloni_event).document_number("1028494033") == expected
     assert sent_to("documents/getOne") == {"company_id": 7, "document_id": 1028494033}
+
+
+@pytest.mark.django_db
+def test_payments_follow_the_payment_method_table(moloni_event, order):
+    from pretix.base.models import OrderPayment
+
+    from pretix_ptinvoicing.providers.moloni.payload import build_payments
+
+    with scopes_disabled():
+        moloni_event.settings.moloni_payment_method_id = 1
+        moloni_event.settings.moloni_payment_method_id_stripe = 2
+        order.total = Decimal("30.00")
+        order.save()
+        for provider, amount in (("stripe", "20.00"), ("giftcard", "10.00")):
+            OrderPayment.objects.create(
+                order=order,
+                provider=provider,
+                amount=Decimal(amount),
+                state=OrderPayment.PAYMENT_STATE_CONFIRMED,
+            )
+        # Split by method: stripe is mapped, the gift card falls back to the default.
+        assert build_payments(order, moloni_event.settings, "2026-10-08") == [
+            {"payment_method_id": 2, "date": "2026-10-08", "value": 20.0},
+            {"payment_method_id": 1, "date": "2026-10-08", "value": 10.0},
+        ]
+
+        # Not adding up to the total: all of it under the main method.
+        order.total = Decimal("25.00")
+        order.save()
+        assert build_payments(order, moloni_event.settings, "2026-10-08") == [
+            {"payment_method_id": 2, "date": "2026-10-08", "value": 25.0},
+        ]
+
+
+@pytest.mark.django_db
+def test_settings_page_has_a_table_row_per_active_payment_method(
+    logged_in_client, moloni_event
+):
+    # Gift cards are on by default in pretix core; "free" is never a real payment.
+    with scopes_disabled():
+        moloni_event.settings.payment_giftcard__enabled = True
+        moloni_event.settings.payment_banktransfer__enabled = False
+    response = logged_in_client.get(
+        f"/control/event/{moloni_event.organizer.slug}/{moloni_event.slug}"
+        "/invoicing/settings/"
+    )
+    html = response.content.decode()
+    table = html[html.index("<table") : html.index("</table>")]
+    assert 'name="moloni-moloni_payment_method_id_giftcard"' in table
+    assert "moloni_payment_method_id_banktransfer" not in html
+    assert "moloni_payment_method_id_free" not in html
+    # In the table, not repeated as a plain form row.
+    assert html.count('name="moloni-moloni_payment_method_id_giftcard"') == 1
+
+
+@pytest.mark.django_db
+def test_payment_marked_paid_by_hand_counts_as_the_buyers_method(moloni_event, order):
+    # U0RYS: Multibanco reference pending, the organizer marked the order paid ("manual").
+    from pretix.base.models import OrderPayment
+
+    from pretix_ptinvoicing.providers.moloni.payload import build_payments
+
+    with scopes_disabled():
+        moloni_event.settings.moloni_payment_method_id = 1
+        moloni_event.settings.moloni_payment_method_id_eupago_multibanco = 7
+        order.total = Decimal("163.00")
+        order.save()
+        for provider, state in (
+            ("eupago_multibanco", OrderPayment.PAYMENT_STATE_PENDING),
+            ("manual", OrderPayment.PAYMENT_STATE_CONFIRMED),
+        ):
+            OrderPayment.objects.create(
+                order=order, provider=provider, amount=order.total, state=state
+            )
+        assert build_payments(order, moloni_event.settings, "2026-10-08") == [
+            {"payment_method_id": 7, "date": "2026-10-08", "value": 163.0}
+        ]

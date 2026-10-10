@@ -1,3 +1,7 @@
+from decimal import Decimal
+
+from pretix.base.models import OrderPayment
+
 from ...orderdata import (
     FINAL_CONSUMER_NAME,
     FINAL_CONSUMER_NIF,
@@ -112,11 +116,11 @@ def build_products(lines, event_settings, product_ids, tax_rate):
             # fee kind, see MoloniProvider._resolve_product_ids.
             "product_id": product_ids[line.catalog_key],
             "name": line.name[:100],
-            "summary": line.reference,
-            "qty": 1,
-            # ponytail: sent net (4 decimals, see Line.net), because Moloni applies
-            # `taxes` on top of `price`. Moloni's docs don't state net vs gross — settle
-            # it with one document against a real account before trusting this.
+            # No summary: Moloni prints it under the name, and "pretix-33" means
+            # nothing to the buyer.
+            "qty": line.qty,
+            # Net, 8 decimals (see set_nets): Moloni applies `taxes` on top of `price` —
+            # confirmed on real documents.
             "price": float(line.net),
             "order": index,
             "discount": 0,
@@ -127,16 +131,48 @@ def build_products(lines, event_settings, product_ids, tax_rate):
 
 
 def build_payments(order, event_settings, date):
-    payment_method_id = event_settings.get("moloni_payment_method_id", as_type=int)
-    if not payment_method_id:
-        return []
-    # An invoice-receipt is by definition settled, so the payment carries the full total.
+    """
+    An invoice-receipt is by definition settled, so its payments add up to the total.
+
+    Each pretix payment method is recorded under the Moloni method it's mapped to
+    (MoloniSettingsForm's table), else the default. Split by method only when the
+    confirmed payments add up to the total exactly; anything else (overpaid, partly
+    refunded, paid by hand with no payment) goes in whole under the main method.
+
+    A payment the organizer confirmed by hand ("manual" — marking the order paid in
+    the backend) counts as the method the buyer chose, i.e. the order's latest other
+    payment attempt: the Multibanco reference paid but never confirmed automatically
+    is still a Multibanco payment.
+    """
+    default = event_settings.get("moloni_payment_method_id", as_type=int)
+    chosen = (
+        order.payments.exclude(provider="manual")
+        .order_by("-created")
+        .values_list("provider", flat=True)
+        .first()
+    )
+
+    def method(pretix_provider):
+        if pretix_provider == "manual" and chosen:
+            pretix_provider = chosen
+        return (
+            event_settings.get(
+                f"moloni_payment_method_id_{pretix_provider}", as_type=int
+            )
+            or default
+        )
+
+    amounts = {}
+    for payment in order.payments.filter(state=OrderPayment.PAYMENT_STATE_CONFIRMED):
+        key = method(payment.provider)
+        amounts[key] = amounts.get(key, Decimal(0)) + payment.amount
+    if not amounts or sum(amounts.values()) != order.total:
+        main = max(amounts, key=amounts.get) if amounts else default
+        amounts = {main: order.total}
     return [
-        {
-            "payment_method_id": payment_method_id,
-            "date": date,
-            "value": float(order.total),
-        }
+        {"payment_method_id": key, "date": date, "value": float(value)}
+        for key, value in amounts.items()
+        if key
     ]
 
 

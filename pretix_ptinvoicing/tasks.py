@@ -9,6 +9,7 @@ from pretix.celery_app import app
 
 from .mail import send_credit_note_email, send_invoice_email
 from .models import IssuedInvoice
+from .orderdata import billing_data
 from .providers import ProviderError, get_provider
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,7 @@ def _attempt(task, row, provider, order, call):
     row.permanent_url = document.permanent_url
     row.error_message = None
     row.error_detail = None
+    row.billing_data = billing_data(order)
     row.save()
     logger.info(
         "ptinvoicing: %s issued for %s via %s (doc %s)",
