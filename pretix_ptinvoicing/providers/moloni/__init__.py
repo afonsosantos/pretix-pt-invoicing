@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import random
 from decimal import Decimal
@@ -93,6 +94,30 @@ class MoloniSettingsForm(SettingsForm):
         choices=[(2, _("Service")), (1, _("Product"))],
     )
     moloni_unit_id = forms.IntegerField(label=_("Unit (Moloni)"))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # The payment-method table: one optional Moloni method per payment method the
+        # event takes, rendered as a table (payment_methods.html), not as form rows.
+        # Same dropdown options as the default (lookups), so settings.js needs nothing
+        # new.
+        for identifier, pp in mapped_payment_providers(self.obj):
+            self.fields[payment_method_key(identifier)] = forms.IntegerField(
+                label=pp.verbose_name,
+                required=False,
+                # Rendered by hand, not by bootstrap_form, so styled by hand.
+                widget=forms.NumberInput(attrs={"class": "form-control"}),
+            )
+
+    @property
+    def payment_method_rows(self):
+        return [self[name] for name in self.fields if name.startswith(MAPPING_PREFIX)]
+
+    @property
+    def table_fields(self):
+        # What settings.html leaves out of the plain form rows: it's in the table.
+        return ",".join(f.name for f in self.payment_method_rows)
+
     moloni_maturity_date_id = forms.IntegerField(
         label=_("Maturity date (Moloni)"),
         help_text=_(
@@ -100,6 +125,24 @@ class MoloniSettingsForm(SettingsForm):
             '"Pronto pagamento".'
         ),
     )
+
+
+MAPPING_PREFIX = "moloni_payment_method_id_"
+
+
+def mapped_payment_providers(event):
+    """The payment-method table's rows: the event's active pretix payment methods —
+    not "free" (nothing is paid) nor meta providers (settings holders only)."""
+    return [
+        (identifier, pp)
+        for identifier, pp in event.get_payment_providers().items()
+        if pp.is_enabled and not pp.is_meta and identifier != "free"
+    ]
+
+
+def payment_method_key(pretix_provider):
+    """Settings key of the Moloni method a pretix payment method is recorded under."""
+    return MAPPING_PREFIX + pretix_provider
 
 
 class MoloniProvider(InvoiceProvider):
@@ -251,6 +294,8 @@ class MoloniProvider(InvoiceProvider):
         """
         Moloni takes only a customer_id — there is no inline client block on the document,
         so the customer has to exist first.
+
+        Returns (customer_id, alternate_address_id or None): see _alternate_address_id.
         """
         custom_field_is_nif = self.settings.get(
             "ptinvoicing_nif_custom_field", as_type=bool, default=False
@@ -290,19 +335,18 @@ class MoloniProvider(InvoiceProvider):
                     % {"count": len(matches), "vat": tin}
                 )
             if matches:
-                return matches[0]["customer_id"]
+                return self._existing(client, company_id, matches[0], customer)
         else:
             # Every buyer without a NIF is filed under 999999990, so the name is all
             # there is to match on. Reuse the lowest id rather than creating one per
             # sale — the duplication that once bricked a Fact.pt account. Same fiscal
             # entity, same name: which duplicate is picked doesn't matter.
             same_name = sorted(
-                int(c["customer_id"])
-                for c in matches
-                if c.get("name") == customer["name"]
+                (c for c in matches if c.get("name") == customer["name"]),
+                key=lambda c: int(c["customer_id"]),
             )
             if same_name:
-                return same_name[0]
+                return self._existing(client, company_id, same_name[0], customer)
 
         created = client.call(
             "customers/insert",
@@ -315,7 +359,58 @@ class MoloniProvider(InvoiceProvider):
         customer_id = (created or {}).get("customer_id")
         if not customer_id:
             raise MoloniAPIError(_("Moloni did not return a customer id."))
-        return customer_id
+        return customer_id, None
+
+    def _existing(self, client, company_id, found, customer):
+        return int(found["customer_id"]), self._alternate_address_id(
+            client, company_id, found, customer
+        )
+
+    def _alternate_address_id(self, client, company_id, found, customer):
+        """
+        The document's alternate_address_id when this order's address isn't the one on
+        the reused customer, else None.
+
+        A customer is shared — by every order with that NIF, or every final consumer of
+        that name — so its own record is never overwritten with one buyer's address (and
+        an invoice already issued against it keeps its own). Instead the address goes in
+        as one of Moloni's customer alternate addresses, keyed by a hash of the address
+        in `code`, so the same address is found again rather than added twice.
+        """
+        fields = ("address", "city", "zip_code", "country_id")
+        if customer["address"] == "-" and customer["city"] == "-":
+            # The buyer left the address blank (build_customer's placeholders): the
+            # customer's own record stands — for a blank order, Moloni's "Consumidor
+            # Final", printed with its "Desconhecido" address, nothing of ours added.
+            return None
+        if all(str(found.get(k) or "") == str(customer[k]) for k in fields):
+            return None
+        code = (
+            "pretix-"
+            + hashlib.sha1(
+                "|".join(str(customer[k]) for k in fields).encode()
+            ).hexdigest()[:10]
+        )
+        payload = {"company_id": company_id, "customer_id": int(found["customer_id"])}
+        # Not swallowed, like every lookup here: a failure must not add a duplicate.
+        for alternate in (
+            client.call("customerAlternateAddresses/getAll", payload) or []
+        ):
+            if alternate.get("code") == code:
+                return alternate["address_id"]
+        created = client.call(
+            "customerAlternateAddresses/insert",
+            {
+                **payload,
+                "designation": customer["address"][:50],
+                "code": code,
+                **{k: customer[k] for k in fields},
+            },
+        )
+        address_id = (created or {}).get("address_id")
+        if not address_id:
+            raise MoloniAPIError(_("Moloni did not return an alternate address id."))
+        return address_id
 
     def _country_id(self, client, order):
         """
@@ -434,7 +529,9 @@ class MoloniProvider(InvoiceProvider):
 
         lines = invoice_lines(order)
         tax_rate = self._check_taxes(client, lines, company_id)
-        customer_id = self._resolve_customer_id(client, order, company_id)
+        customer_id, alternate_address_id = self._resolve_customer_id(
+            client, order, company_id
+        )
         product_ids = self._resolve_product_ids(client, lines, company_id, tax_rate)
         document = build_document(
             order,
@@ -446,6 +543,8 @@ class MoloniProvider(InvoiceProvider):
             product_ids,
             tax_rate,
         )
+        if alternate_address_id:
+            document["alternate_address_id"] = alternate_address_id
         result = client.call("invoiceReceipts/insert", document)
 
         document_id = (result or {}).get("document_id")
@@ -626,7 +725,19 @@ class MoloniProvider(InvoiceProvider):
             return fields
 
         payload = {"company_id": int(company_id)}
+        # The payment-method table (MoloniSettingsForm.__init__) shares the default's
+        # options. Its rows come from the event, not from `data`: settings.js only
+        # posts fields that have a value, so empty rows would never get a dropdown.
+        mapping = [
+            payment_method_key(identifier)
+            for identifier, _pp in mapped_payment_providers(self.event)
+        ]
+        fetched = {}
         for field, endpoint, id_key, label_key in (
+            *(
+                (k, "paymentMethods/getAll", "payment_method_id", "name")
+                for k in mapping
+            ),
             (
                 "moloni_document_set_id",
                 "documentSets/getAll",
@@ -665,12 +776,25 @@ class MoloniProvider(InvoiceProvider):
             # ponytail: top-level categories only (parent_id 0); walk the tree if
             # someone needs to file tickets under a subcategory.
             extra = {"parent_id": 0} if endpoint == "productCategories/getAll" else {}
-            try:
-                rows = client.call(endpoint, {**payload, **extra}) or []
-            except MoloniAPIError:
+            # Several fields share an endpoint (both document sets, the payment
+            # methods): one call each.
+            if endpoint not in fetched:
+                try:
+                    fetched[endpoint] = (
+                        client.call(endpoint, {**payload, **extra}) or []
+                    )
+                except MoloniAPIError:
+                    fetched[endpoint] = None
+            rows = fetched[endpoint]
+            if rows is None:
                 continue
             fields[field] = [
                 {"id": r.get(id_key), "label": r.get(label_key) or r.get(id_key)}
                 for r in rows
             ]
+        for field in mapping:
+            # Empty = the default method. Without this first option the dropdown would
+            # preselect a real method, and the next Save would store it unasked.
+            if field in fields:
+                fields[field].insert(0, {"id": "", "label": str(_("— default —"))})
         return fields

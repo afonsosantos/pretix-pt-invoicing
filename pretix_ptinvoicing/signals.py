@@ -1,12 +1,15 @@
 import logging
 from decimal import Decimal
 
+from django import forms
 from django.db import transaction
 from django.db.models import Sum
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.template.loader import get_template
+from django.templatetags.static import static
 from django.urls import reverse
+from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
 from django_scopes import scopes_disabled
 from pretix.base.models import (
@@ -16,14 +19,16 @@ from pretix.base.models import (
     OrderPayment,
     OrderRefund,
 )
-from pretix.base.signals import order_paid, periodic_task
+from pretix.base.signals import order_modified, order_paid, periodic_task
 from pretix.control.signals import nav_event, nav_event_settings
 from pretix.control.signals import order_info as control_order_info
 from pretix.helpers.periodic import minimum_interval
+from pretix.presale.signals import contact_form_fields, html_head
 from pretix.presale.signals import order_info_top as presale_order_info_top
 
-from .mail import send_connection_expired_email
+from .mail import send_billing_changed_email, send_connection_expired_email
 from .models import IssuedInvoice
+from .orderdata import billing_changed
 from .providers import get_provider
 from .tasks import issue_credit_note, issue_invoice
 
@@ -128,6 +133,53 @@ def ptinvoicing_refund_done(sender, instance, **kwargs):
     transaction.on_commit(enqueue)
 
 
+@receiver(order_modified, dispatch_uid="ptinvoicing_order_modified")
+def ptinvoicing_order_modified(sender, order, **kwargs):
+    """
+    The buyer changed their billing data after the invoice was issued. An issued
+    document can't be changed, so accepting the change means a credit note and a new
+    invoice — never done here without staff approval, whatever pretix's own
+    "reissue after address change" setting says (that one only covers pretix's own
+    invoices). The organizer is e-mailed, and approves with the order page's buttons.
+    """
+    provider = get_provider(sender)
+    invoice = provider and IssuedInvoice.uncredited_invoice(order, provider.identifier)
+    # ponytail: re-sent on every later save while the data still differs; store what
+    # was alerted if that gets noisy.
+    if invoice and billing_changed(order, invoice):
+        send_billing_changed_email(order, invoice)
+
+
+@receiver(contact_form_fields, dispatch_uid="ptinvoicing_contact_form_fields")
+def ptinvoicing_contact_form_fields(sender, request, **kwargs):
+    # Saved by pretix into order.meta_info's contact_form_data; read by invoice_lines.
+    if not sender.settings.get("ptinvoicing_itemize_option", as_type=bool):
+        return {}
+    return {
+        "ptinvoicing_itemize": forms.BooleanField(
+            label=_("Itemize the invoice by attendee"),
+            help_text=_("Each ticket's line on the invoice shows the attendee's name."),
+            required=False,
+        )
+    }
+
+
+@receiver(html_head, dispatch_uid="ptinvoicing_html_head")
+def ptinvoicing_html_head(sender, request, **kwargs):
+    # With the custom field as the NIF, hides pretix's own VAT ID field (checkout.js).
+    # Not on payment pages (PCI DSS 6.4.3, see the signal's docs).
+    if getattr(request, "pci_dss_payment_page", False) or not sender.settings.get(
+        "ptinvoicing_nif_custom_field", as_type=bool
+    ):
+        return ""
+    return format_html(
+        '<link rel="stylesheet" href="{}">'
+        '<script type="application/javascript" src="{}" defer></script>',
+        static("pretix_ptinvoicing/checkout.css"),
+        static("pretix_ptinvoicing/checkout.js"),
+    )
+
+
 def _nav_entry(request, url_name, label, icon=None):
     resolved = request.resolver_match
     entry = {
@@ -185,6 +237,9 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
         return ""
     latest_credit = cycles[-1]["credit_note"] if cycles else None
     is_paid = order.status == order.STATUS_PAID
+    uncredited = provider and IssuedInvoice.uncredited_invoice(
+        order, provider.identifier
+    )
     ctx = {
         "order": order,
         "request": request,
@@ -199,6 +254,8 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
         ),
         "cycles": cycles,
         "is_paid": is_paid,
+        "billing_changed": uncredited and billing_changed(order, uncredited),
+        "changed_invoice": uncredited,
         # Paid, and nothing uncredited covers it: no invoice yet, or the last one was
         # credited (a refund) before this payment.
         "needs_invoice": is_paid

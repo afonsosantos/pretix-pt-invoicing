@@ -1,0 +1,4 @@
+/* checkout.js: outranks the inline display pretix's own JS sets on the VAT ID field. */
+.ptinvoicing-hidden {
+    display: none !important;
+}

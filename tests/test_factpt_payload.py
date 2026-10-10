@@ -4,7 +4,7 @@ import pytest
 from django_scopes import scopes_disabled
 from pretix.base.models import InvoiceAddress, OrderFee, OrderPosition
 
-from pretix_ptinvoicing.orderdata import Line
+from pretix_ptinvoicing.orderdata import Line, set_nets
 from pretix_ptinvoicing.providers.factpt.payload import (
     bare_tin,
     build_client_block,
@@ -91,7 +91,7 @@ def test_build_items_block_reads_defaults_from_event_settings(event, order, posi
     assert items[0]["taxId"] == 5
     assert items[0]["unitId"] == 2
     assert items[0]["type"] == "product"
-    assert items[0]["price"] == "23.0000"
+    assert items[0]["price"] == "23.00000000"
 
 
 @pytest.mark.django_db
@@ -172,7 +172,7 @@ def test_build_items_block_sends_the_net_price(event, order, item):
         event.settings.factpt_default_tax_id = 5
         items = build_items_block(order, event.settings)
 
-    assert items[0]["price"] == "15.0000"
+    assert items[0]["price"] == "15.00000000"
 
 
 @pytest.mark.django_db
@@ -193,14 +193,85 @@ def test_build_items_block_net_price_survives_the_round_trip(event, order, item)
     assert (net * Decimal("1.23")).quantize(Decimal("0.01")) == Decimal("15.00")
 
 
-def test_net_price_round_trips_for_every_cent_price():
+HALF_UP = {"rounding": "ROUND_HALF_UP"}
+
+
+def _stored(line):
+    # Moloni keeps the price to 5 decimals (a draft sent 28.45528455, got 28.45528).
+    return line.net.quantize(Decimal("0.00001"), **HALF_UP)
+
+
+def _pvp(line):
+    # Moloni's "PVP Unit." column: the stored net plus VAT, to 5 decimals.
+    return (_stored(line) * (100 + line.tax_rate) / 100).quantize(Decimal("0.00001"))
+
+
+def _check_document(lines, rate):
+    """
+    What a provider prints, computed the way Moloni did on real documents: incidence
+    from each line's net rounded, total from the unrounded nets — as Moloni stores
+    them. Both must match what the buyer paid. `lines` is [(gross, qty)].
+    """
+    lines = set_nets([Line("x", g, rate, "k", "r", qty=q) for g, q in lines])
+    incidence = sum(
+        (_stored(line) * line.qty).quantize(Decimal("0.01"), **HALF_UP)
+        for line in lines
+    )
+    exact = sum(_stored(line) * line.qty for line in lines)
+    paid = sum(line.gross * line.qty for line in lines)
+    assert (exact * (100 + rate) / 100).quantize(Decimal("0.01"), **HALF_UP) == paid
+    assert incidence == (paid * 100 / (100 + rate)).quantize(
+        Decimal("0.01"), **HALF_UP
+    ), lines
+    assert all(line.net == line.net.quantize(Decimal("1e-8")) for line in lines)
+    return lines
+
+
+def test_tax_inclusive_prices_print_a_consistent_document():
+    # L0YCM on a real Moloni account: 28.4553 + 23.5772 printed incidence 52.04 and VAT
+    # 11.96 — 52.04 + 23% isn't 64.00. Now 28.45 + 23.58 = 52.03, VAT 11.97.
+    lines = _check_document([(Decimal("35.00"), 1), (Decimal("29.00"), 1)], Decimal(23))
+    assert [(line.net * line.qty).quantize(Decimal("0.01")) for line in lines] == [
+        Decimal("28.45"),
+        Decimal("23.58"),
+    ]
+
+
+def test_identical_tickets_print_their_unit_price_as_close_as_moloni_can():
+    # U0RYS: 3 × 35.00 + 2 × 29.00 at 23% printed "PVP Unit." 35,001 / 34,99953 /
+    # 28,99996 with 4-decimal nets, one line per ticket. One line per kind now — and
+    # 35.00 / 1.23 repeats forever, so no 5-decimal net prints 35,00000: 28.45528 →
+    # 34,99999 and 28.45529 → 35,00001 (a real document printed the first).
+    lines = _check_document([(Decimal("35.00"), 3), (Decimal("29.00"), 2)], Decimal(23))
+    assert [_pvp(line) for line in lines] == [
+        Decimal("34.99999"),
+        Decimal("29.00001"),
+    ]
+
+
+def test_tax_exclusive_prices_stay_whole_cents():
+    lines = _check_document([(Decimal("43.05"), 1), (Decimal("35.67"), 1)], Decimal(23))
+    assert [line.net for line in lines] == [Decimal(35), Decimal(29)]
+
+
+def test_nets_add_up_for_every_cent_price_and_random_documents():
+    import random
+
     rates = (Decimal(23), Decimal(13), Decimal(6), Decimal(0))
     for cents in range(1, 20001):
-        gross = Decimal(cents) / 100
         for rate in rates:
-            line = Line("x", gross, rate, "k", "r")
-            back = (line.net * (100 + rate) / 100).quantize(Decimal("0.01"))
-            assert back == gross, (gross, rate)
+            for qty in (1, 3):
+                lines = _check_document([(Decimal(cents) / 100, qty)], rate)
+                # A single kind of ticket prints its price to within Moloni's last
+                # decimal — exactly, whenever a 5-decimal net can.
+                assert abs(_pvp(lines[0]) - lines[0].gross) <= Decimal("0.00001")
+    rng = random.Random(0)
+    for _ in range(5000):
+        lines = [
+            (Decimal(rng.randint(1, 20000)) / 100, rng.randint(1, 5))
+            for _ in range(rng.randint(2, 12))
+        ]
+        _check_document(lines, rng.choice(rates))
 
 
 @pytest.mark.django_db
@@ -216,7 +287,7 @@ def test_build_items_block_includes_fees(event, order, position):
         )
         items = build_items_block(order, event.settings)
 
-    assert [i["price"] for i in items] == ["23.0000", "2.0000"]
+    assert [i["price"] for i in items] == ["23.00000000", "2.00000000"]
     assert items[1]["description"] == "Payment fee"
 
 

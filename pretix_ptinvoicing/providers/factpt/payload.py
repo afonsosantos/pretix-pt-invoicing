@@ -69,19 +69,18 @@ def build_items_block(order, event_settings):
             "description": line.name[:150],
             # Fact.pt's `price` is the NET unit price: it adds taxId's VAT on top
             # (verified against the sandbox — 15.00 at 23% came back as gross 18.45).
-            # pretix's prices are gross, so the tax has to come back out — see Line.net
-            # for why that's done from the rate rather than with pretix's rounded
-            # tax_value. Needs the API key's series to have 8 decimal places: a 2-decimal
+            # pretix's prices are gross, so the tax has to come back out — see set_nets
+            # for how. Needs the API key's series to have 8 decimal places: a 2-decimal
             # one rejects it, and its allowRound left invoices cents off in the sandbox.
-            # ponytail: 4-decimal net is unverified against an 8-decimal series; confirm
-            # with one document at 15.00/23% that it comes back as gross 15.00.
+            # ponytail: the 8-decimal net is unverified against Fact.pt; confirm with
+            # one document at 15.00/23% that it comes back as gross 15.00.
             "price": str(line.net),
             "reference": line.reference[:20],
             "retention": False,
             "type": default_type,
             "unitId": default_unit_id,
             "taxId": default_tax_id,
-            "quantity": 1,
+            "quantity": line.qty,
         }
         for line in invoice_lines(order)
     ]

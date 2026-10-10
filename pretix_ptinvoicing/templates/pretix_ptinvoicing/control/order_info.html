@@ -23,6 +23,16 @@
             </div>
         {% endif %}
 
+        {% if billing_changed %}
+            <div class="alert alert-warning">
+                {% blocktrans trimmed with number=changed_invoice.display_number %}
+                    The buyer changed their billing details after invoice {{ number }}
+                    was issued. To accept the change, issue a credit note and then a
+                    new invoice.
+                {% endblocktrans %}
+            </div>
+        {% endif %}
+
         {% if not cycles and not is_paid %}
             <p class="text-muted">
                 {% trans "Invoices are only issued once the order is paid." %}

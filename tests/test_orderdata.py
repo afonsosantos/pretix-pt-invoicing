@@ -83,3 +83,38 @@ def test_one_line_flattens_newlines():
     assert one_line("Rua do Alecrim 11\n3.º Esq.", 100) == "Rua do Alecrim 11 3.º Esq."
     assert one_line("", 100) == ""
     assert one_line(None, 100) == ""
+
+
+@pytest.mark.django_db
+def test_lines_carry_attendee_names_only_when_the_buyer_asked(order, position):
+    from pretix_ptinvoicing.orderdata import invoice_lines
+
+    with scopes_disabled():
+        position.attendee_name_parts = {"_legacy": "Ana Silva"}
+        position.save()
+        assert invoice_lines(order)[0].name == str(position.item.name)
+
+        order.meta_info = '{"contact_form_data": {"ptinvoicing_itemize": true}}'
+        order.save()
+        order = type(order).objects.get(pk=order.pk)  # meta_info_data is cached
+        assert invoice_lines(order)[0].name == f"{position.item.name} — Ana Silva"
+
+
+@pytest.mark.django_db
+def test_billing_changed_compares_with_what_was_issued(order):
+    from pretix_ptinvoicing.models import IssuedInvoice
+    from pretix_ptinvoicing.orderdata import billing_changed, billing_data
+
+    with scopes_disabled():
+        ia = InvoiceAddress.objects.create(order=order, street="Rua A", country="PT")
+        order.refresh_from_db()
+        doc = IssuedInvoice(billing_data=None)
+        assert not billing_changed(order, doc)  # issued before this was stored
+
+        doc.billing_data = billing_data(order)
+        assert not billing_changed(order, doc)
+
+        ia.street = "Rua B"
+        ia.save()
+        order.refresh_from_db()
+        assert billing_changed(order, doc)

@@ -111,6 +111,49 @@ def send_connection_expired_email(event, provider):
         )
 
 
+def send_billing_changed_email(order, invoice):
+    """Tell the organizer the buyer changed billing data after the invoice was issued."""
+    event = order.event
+    recipient = event.settings.get("contact_mail")
+    if not recipient:
+        logger.warning(
+            "ptinvoicing: billing data of %s changed, and no contact e-mail is set",
+            order.code,
+        )
+        return
+    order_url = settings.SITE_URL + reverse(
+        "control:event.order",
+        kwargs={
+            "organizer": event.organizer.slug,
+            "event": event.slug,
+            "code": order.code,
+        },
+    )
+    try:
+        mail(
+            recipient,
+            LazyI18nString.from_gettext(
+                _("Order {code}: billing details changed after invoicing")
+            ),
+            LazyI18nString.from_gettext(
+                _(
+                    "Hello,\n\n"
+                    "the buyer of order {code} changed their billing details after "
+                    "invoice-receipt {number} was issued. An issued document can't be "
+                    "changed: to accept the change, issue a credit note and then a new "
+                    "invoice from the order's page:\n\n"
+                    "{url}\n"
+                )
+            ),
+            {"code": order.code, "number": invoice.display_number, "url": order_url},
+            event=event,
+        )
+    except Exception:
+        logger.exception(
+            "ptinvoicing: could not e-mail the billing change for %s", order.code
+        )
+
+
 def send_credit_note_email(order, provider, credit_note):
     return _send_document_email(
         order,

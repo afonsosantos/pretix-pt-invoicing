@@ -32,7 +32,17 @@ class ProviderSelectForm(SettingsForm):
             "have nowhere to enter a tax number. Turn this on after adding a custom "
             'recipient field labelled e.g. "NIF" under Settings → Invoicing; it is '
             "then used as the tax number when the VAT ID field is empty. Portuguese "
-            "numbers that fail their check digit are ignored, not sent."
+            "numbers that fail their check digit are ignored, not sent. It then is the "
+            "one tax number field at checkout for Portuguese addresses: pretix's own "
+            "VAT ID field is hidden there, businesses included."
+        ),
+    )
+    ptinvoicing_itemize_option = forms.BooleanField(
+        label=_("Let buyers itemize the invoice by attendee"),
+        required=False,
+        help_text=_(
+            "Adds a checkbox at checkout. When ticked, each invoice line carries the "
+            "attendee's name next to the product."
         ),
     )
     ptinvoicing_show_in_order = forms.BooleanField(
