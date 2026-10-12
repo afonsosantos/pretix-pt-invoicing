@@ -246,4 +246,6 @@ def client_name(order, limit=100):
     ia = getattr(order, "invoice_address", None)
     company = ia and getattr(ia, "company", None)
     person = ia and getattr(ia, "name", None)
-    return one_line(company or person, limit) or FINAL_CONSUMER_NAME
+    # A whitespace-only company value is truthy, but is not a usable name. Normalize
+    # each candidate before falling back so it cannot hide the person's name.
+    return one_line(company, limit) or one_line(person, limit) or FINAL_CONSUMER_NAME

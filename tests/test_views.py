@@ -502,6 +502,26 @@ def test_buyer_download_rejects_a_wrong_secret(client, event, order):
 
 
 @pytest.mark.django_db
+def test_buyer_download_rejects_a_disabled_plugin(client, event, order):
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.create(
+            order=order,
+            provider="factpt",
+            identifier_id="pretix-dummy-FOOBAR",
+            status=IssuedInvoice.STATUS_SUCCESS,
+            document_id="12345",
+        )
+
+    # The buyer-facing event_patterns URL remains routable after plugin deactivation.
+    # No HTTP mock: a disabled event must 404 before contacting the provider.
+    response = client.get(
+        f"/{event.organizer.slug}/{event.slug}/order/{order.code}/{order.secret}"
+        f"/invoicing/{invoice.pk}/download/"
+    )
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
 def test_no_template_comment_leaks_onto_the_settings_page(logged_in_client, event):
     # {# ... #} is single-line only in Django: a multi-line one renders as visible text.
     body = logged_in_client.get(

@@ -767,6 +767,37 @@ def test_core_issues_through_any_provider(order, event, position, dummy_provider
 
 
 @pytest.mark.django_db
+def test_billing_snapshot_is_taken_before_provider_call(
+    order, event, dummy_provider, monkeypatch
+):
+    from pretix.base.models import InvoiceAddress
+
+    from pretix_ptinvoicing.orderdata import billing_data
+
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+        address = InvoiceAddress.objects.create(order=order, street="Rua antiga")
+        order.refresh_from_db()
+        expected = billing_data(order)
+
+    def issue_then_edit(self, order_arg, identifier_id):
+        with scopes_disabled():
+            address.street = "Rua nova"
+            address.save()
+        return IssuedDocument(document_id="DUMMY-1")
+
+    monkeypatch.setattr(dummy_provider, "issue", issue_then_edit)
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.billing_data == expected
+
+
+@pytest.mark.django_db
 def test_paid_again_after_a_credited_refund_issues_a_new_invoice(
     order, event, position, dummy_provider
 ):

@@ -70,6 +70,18 @@ def test_client_name_prefers_the_company_and_truncates(order):
 
 
 @pytest.mark.django_db
+def test_client_name_falls_back_from_blank_company_to_person(order):
+    with scopes_disabled():
+        InvoiceAddress.objects.create(
+            order=order,
+            company="   ",
+            name_parts={"_scheme": "full", "full_name": "Jane Doe"},
+        )
+    order.refresh_from_db()
+    assert client_name(order) == "Jane Doe"
+
+
+@pytest.mark.django_db
 def test_client_name_without_a_name_is_the_final_consumer_not_the_email(order):
     # An empty invoice address, as pretix saves one when the buyer skips it.
     with scopes_disabled():

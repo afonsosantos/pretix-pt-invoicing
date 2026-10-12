@@ -79,6 +79,20 @@ def test_create_invoice_receipt_raises_on_http_error_status():
 
 
 @responses.activate
+def test_create_invoice_receipt_rejects_non_object_json():
+    responses.add(
+        responses.POST,
+        "https://api.fact.pt/documents/invoicereceipt",
+        json=["unexpected"],
+        status=200,
+    )
+
+    client = FactptClient(token="abc")
+    with pytest.raises(FactptAPIError, match="Invalid response"):
+        client.create_invoice_receipt({"document": {}})
+
+
+@responses.activate
 def test_list_taxes_returns_data():
     responses.add(
         responses.GET,

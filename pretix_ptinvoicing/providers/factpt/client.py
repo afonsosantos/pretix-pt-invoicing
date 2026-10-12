@@ -51,6 +51,16 @@ class FactptClient:
                 http_status=response.status_code,
             )
 
+        # Fact.pt normally returns an object containing AppResponse. A proxy error or
+        # unexpected API response can still be valid JSON of another shape; don't let
+        # that leak an AttributeError out of a background task.
+        if not isinstance(data, dict):
+            raise FactptAPIError(
+                _("Invalid response from Fact.pt (HTTP %(status)s)")
+                % {"status": response.status_code},
+                http_status=response.status_code,
+            )
+
         app_response = data.get("AppResponse") or {}
         app_status = data.get("AppStatusCode")
 
