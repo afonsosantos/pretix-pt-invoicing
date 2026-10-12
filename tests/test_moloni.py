@@ -349,6 +349,17 @@ def test_client_reports_bad_credentials_as_a_provider_error():
     assert "Bad credentials" in str(excinfo.value)
 
 
+@responses.activate
+def test_client_rejects_non_object_grant_response():
+    responses.add(responses.GET, GRANT, json=["unexpected"], status=200)
+    client = MoloniClient(
+        client_id="cid", client_secret="secret", username="u", password="p"
+    )
+
+    with pytest.raises(MoloniAPIError, match="Invalid response"):
+        client.token()
+
+
 @pytest.mark.django_db
 @responses.activate
 def test_credit_note_fetches_the_original_then_inserts_a_credit_note(

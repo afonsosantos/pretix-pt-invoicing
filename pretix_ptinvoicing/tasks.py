@@ -71,6 +71,10 @@ def _attempt(task, row, provider, order, call):
             ]
         )
 
+    # Capture the recipient data before the provider call. The order can be edited
+    # while a slow API request is in flight; taking this snapshot after the call could
+    # then record the new address even though the document was issued to the old one.
+    issued_billing_data = billing_data(order)
     try:
         document = call()
     except ProviderError as e:
@@ -121,7 +125,7 @@ def _attempt(task, row, provider, order, call):
     row.permanent_url = document.permanent_url
     row.error_message = None
     row.error_detail = None
-    row.billing_data = billing_data(order)
+    row.billing_data = issued_billing_data
     row.save()
     logger.info(
         "ptinvoicing: %s issued for %s via %s (doc %s)",

@@ -92,6 +92,13 @@ class MoloniClient:
                 % {"status": response.status_code}
             )
 
+        if not isinstance(data, dict):
+            raise MoloniAPIError(
+                _("Invalid response from Moloni (HTTP %(status)s)")
+                % {"status": response.status_code},
+                http_status=response.status_code,
+            )
+
         if "access_token" not in data:
             raise MoloniAPIError(
                 str(

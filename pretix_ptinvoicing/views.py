@@ -263,6 +263,12 @@ class OrderInvoiceDownloadView(EventViewMixin, OrderDetailMixin, View):
     def get(self, request, *args, **kwargs):
         if self.order is None or self.order is False:
             raise Http404()
+        # event_patterns are mounted for the plugin globally, including events where
+        # the plugin has since been disabled. A previously shared order-secret URL
+        # must stop serving documents once the event opts out, just like the control
+        # panel endpoints do via PluginEnabledMixin.
+        if "pretix_ptinvoicing" not in request.event.get_plugins():
+            raise Http404()
         if not request.event.settings.get(
             "ptinvoicing_show_in_order", as_type=bool, default=True
         ):
