@@ -164,6 +164,34 @@ document.addEventListener("DOMContentLoaded", function () {
             });
     }
 
+    // The note under the prefix field: how much of the selected provider's reference
+    // limit (its data-reference-limit-field, e.g. Moloni's 30) the prefix leaves for the
+    // product references. Follows the prefix and the limit as they're typed; empty for a
+    // provider without a limit.
+    const prefixInput = document.getElementById("id_ptinvoicing_reference_prefix");
+    const prefixNote = document.getElementById("ptinvoicing-prefix-note");
+
+    function updatePrefixNote() {
+        if (!prefixInput || !prefixNote) return;
+        const fieldset = activeFieldset();
+        const fieldName = fieldset && fieldset.dataset.referenceLimitField;
+        const limitInput = fieldName
+            ? document.getElementById("id_" + fieldset.dataset.provider + "-" + fieldName)
+            : null;
+        const limit = limitInput
+            ? parseInt(limitInput.value, 10) || parseInt(limitInput.max, 10)
+            : NaN;
+        if (isNaN(limit)) {
+            prefixNote.textContent = "";
+            return;
+        }
+        const legend = fieldset.querySelector("legend");
+        prefixNote.textContent = text.textPrefixNote
+            .replace("{provider}", legend ? legend.textContent.trim() : fieldset.dataset.provider)
+            .replace("{limit}", limit)
+            .replace("{left}", Math.max(0, limit - prefixInput.value.trim().length));
+    }
+
     function showActive() {
         // disabled, not just hidden: a hidden required field still fails native HTML5
         // validation ("not focusable"). <fieldset disabled> excludes it from both.
@@ -172,6 +200,7 @@ document.addEventListener("DOMContentLoaded", function () {
             fs.hidden = inactive;
             fs.disabled = inactive;
         });
+        updatePrefixNote();
         loadOptions();
     }
 
@@ -186,6 +215,11 @@ document.addEventListener("DOMContentLoaded", function () {
                 loadOptions();
             }
         });
+        fs.addEventListener("input", function (e) {
+            const name = e.target.name.slice(fs.dataset.provider.length + 1);
+            if (name === fs.dataset.referenceLimitField) updatePrefixNote();
+        });
     });
+    if (prefixInput) prefixInput.addEventListener("input", updatePrefixNote);
     showActive();
 });

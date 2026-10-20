@@ -91,6 +91,11 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   credit note shared the first's and was silently skipped. `current_cycle()` and
   `uncredited_invoice()` are shared by the tasks and the views' precondition checks. `in_flight`
   is a `pending` row touched within `STALE_AFTER` (10 min): a worker is on it, don't start another.
+  `ItemSettings` (migration `0006`) is the per-product side: a `OneToOneField` to pretix's `Item`
+  (`item.ptinvoicing_settings`), `reference` (the product's catalog reference *without* the
+  event's prefix; blank = `item-<pk>`) and `data`, a JSON dict of provider-specific per-product
+  fields namespaced by hand like event settings (`moloni_type`). One row only for products that
+  have something set — `ItemSettingsForm.save()` deletes the row when everything is cleared.
 - `pretix_ptinvoicing/signals.py` — `order_paid` receiver enqueues `issue_invoice` on Celery,
   **via `transaction.on_commit`**: pretix sends `order_paid` inside the payment's transaction, and
   a worker that loaded the order before the commit saw it unpaid and skipped it for good (pretix's
@@ -174,6 +179,34 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   shadows the stdlib `email` package for anything run with the package directory on `sys.path`,
   which is exactly what the `Makefile`'s `translate` target does (`cd pretix_ptinvoicing && python
   -c ...`). It broke `make translate` with `ModuleNotFoundError: No module named 'email.message'`.
+- **Product references and the product page** (`forms.py`, `signals.py`, `orderdata.py`):
+  - `ptinvoicing_reference_prefix` on `ProviderSelectForm` (default `"pretix-"`,
+    `orderdata.DEFAULT_REFERENCE_PREFIX`; `reference_prefix(event)` reads it, an unset key
+    gives the default, a saved empty string is an empty prefix) goes in front of every
+    product's catalog reference at the provider. It is a core setting because the reference
+    itself is pretix-side; only the *limit* is the provider's (Moloni: 30). The field is
+    rendered by hand in `settings.html` so its note about the selected provider's limit sits
+    in `#ptinvoicing-prefix-note`: the server fills it for the saved provider and prefix
+    (`forms.prefix_note`), and `settings.js` rewrites it as the admin types the prefix or the
+    limit — it finds the limit field through the provider fieldset's
+    `data-reference-limit-field` (`InvoiceProvider.reference_limit_field`). Its string is a
+    `{provider}`/`{limit}`/`{left}` template on the form's `data-text-prefix-note`.
+  - `ItemSettingsForm` is the "Invoicing (PT)" box on pretix's product page, returned by the
+    `item_forms` receiver (`ptinvoicing_item_forms`, prefix `ptinvoicing`) whenever the event has
+    a provider. It has one core field, `reference`, sized to `provider.reference_limit -
+    len(prefix)` (50 when the provider has no limit — Fact.pt invoices lines inline), plus the
+    provider's `item_fields()` (Moloni's `moloni_type`). `clean_reference` rejects the fallback
+    shapes `item-<n>` / `fee-…` (`RESERVED_REFERENCE`) and a reference another product of the
+    event already uses — two products sharing one catalog product would be invoiced under one
+    name. Across events sharing a provider account that can't be checked; it's the admin's call.
+    `ptinvoicing_item_copy` (`item_copy_data`) copies `data` but **not** `reference` when a
+    product is cloned, for the same reason.
+  - `Line.catalog_key` is now `item_reference(item)` — the configured reference, else
+    `item-<pk>` — and fees stay `fee-<type>`; `Line.item_settings` carries the product's
+    `data`. Providers build the full reference as `reference_prefix(event) + catalog_key`, so an
+    account set up before any of this holds exactly the same `pretix-item-<pk>` references.
+    `invoice_lines` select-relates `item__ptinvoicing_settings`; `item_settings(item)` wraps the
+    reverse one-to-one's `DoesNotExist`.
 - `pretix_ptinvoicing/views.py`:
   - `PluginEnabledMixin` on every Control-panel view (Moloni's too): 404 unless the plugin is
     enabled for the event. pretix only enforces that for `event_patterns`; these are plain
@@ -266,10 +299,12 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `settings.css`. `SettingsView` preselects the posted value, else `?provider=` (the Moloni connect
   flow returns with `?provider=moloni`, so a provider being set up stays shown without being saved
   as the event's provider), else the saved one.
-- `pretix_ptinvoicing/migrations/0001_initial.py` — the one migration for `IssuedInvoice`. Depends on
-  `pretixbase.0001_initial` (the `Order` FK target). `id` is a `BigAutoField` to match pretix's
+- `pretix_ptinvoicing/migrations/0001_initial.py` — the first migration, for `IssuedInvoice`. Depends
+  on `pretixbase.0001_initial` (the `Order` FK target). `id` is a `BigAutoField` to match pretix's
   `DEFAULT_AUTO_FIELD`; with a plain `AutoField` every `makemigrations` run would want to write a
-  spurious `0002`.
+  spurious next migration. `0006_item_settings` adds `ItemSettings`. To check for drift, run
+  `makemigrations --check --dry-run` with `GITHUB_WORKFLOW=1` set — `tests/settings.py` disables
+  migrations otherwise, and the command then refuses to run at all.
 
 ### The provider interface
 
@@ -288,6 +323,10 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `issue(order, identifier_id)`, `download(document_id)`, and optional `lookups(data)`.
   `self.settings` is the event's hierarkey store and is **writable**, which is where a provider
   with expiring credentials (an OAuth access token) caches the refreshed one.
+  Optional catalog bits: `reference_limit` (how long prefix + product reference may be, `None`
+  for a provider without a catalog), `reference_limit_field` (the settings field holding it,
+  for the settings page's live note) and `item_fields()` (extra per-product form fields, saved
+  into `ItemSettings.data` and handed back on every `Line.item_settings`).
   `deduplicates_issuance` is the one part of the contract that isn't obvious: it says whether the
   provider itself rejects a second document for the same `identifier_id`. `tasks.py` only auto-
   retries a network failure when it does — otherwise a call that timed out after the document was
@@ -443,11 +482,18 @@ event settings in one flat hierarkey namespace shared with core and every other 
 - **Moloni alternate addresses.** A reused Moloni customer (by NIF, or the shared final consumer)
   is never overwritten. When its stored `address`/`city`/`zip_code`/`country_id` differ from the
   order's, `_alternate_address_id` finds or inserts a `customerAlternateAddresses` entry — `code`
-  is `pretix-` + a hash of the address, so the same address is reused — and the document carries
-  `alternate_address_id`. **Unconfirmed against a real account**: that `getByVat` returns those
-  address fields (if it doesn't, every reused customer gets one alternate address per distinct
-  address), and that Moloni prints the alternate address as the billing address. Real documents
-  did confirm the need: an order with a changed address was printed with the customer's old one.
+  is `pretix-` + a hash of the buyer's name and address, so the same one is reused — and the
+  document carries `alternate_address_id`. **Confirmed on real documents (FR M/8, 2026-10-20)**:
+  `getByVat` returns the address fields, and Moloni prints the alternate address as the
+  billing address — with the entry's `designation` as the *name line*. The designation is
+  therefore the buyer's name; sending the street there printed the street twice and no name.
+  Earlier real documents had confirmed the need: an order with a changed address was printed
+  with the customer's old one.
+  **Catalog product names come from `Line.catalog_name`** (the item's name, a fee's type), never
+  the line name: Moloni prints the catalog name in italics under any line whose name differs,
+  so a product created from an itemized line ("Reduced ticket — Alberto Duarte") carried that
+  attendee onto every later buyer's invoice (real FR M/11). Products created before this keep
+  their stored name until renamed in Moloni.
   **Blank billing data never gets one**: `build_customer`'s `-` placeholders mean "no address",
   so the document is just Moloni's own "Consumidor Final" (stored as `Desconhecido`/`0000-000`),
   as on the real L0YCM — comparing `-` with `Desconhecido` would otherwise add an address of ours.
@@ -777,15 +823,31 @@ real account.
   takes only `customer_id`, there is no inline client block.
 - Every document line needs a `product_id` — Moloni only invoices **catalog products**
   (`invoiceReceipts/insert` rejected lines without one), where Fact.pt takes lines inline.
-  `MoloniProvider._resolve_product_ids` gives each pretix item one, by reference
-  `pretix-item-<item.pk>` — and each fee type one, `pretix-fee-<fee_type>` (keyed on
-  `Line.catalog_key`): `products/getByReference` (exact; a failed lookup raises rather than
-  inserting a duplicate), else `products/insert` — the
-  official WooCommerce plugin's approach. Created with the event's `moloni_product_category_id`
-  (top-level categories only in the dropdown), `moloni_product_type` (service/product) and
-  `moloni_unit_id`, plus the tax/exemption settings; `products/insert` wants the tax's rate
-  `value` too, fetched from `taxes/getAll` only when a product is actually created. Item pks are
-  install-wide unique, so events sharing a Moloni company share products per item, not per event.
+  `MoloniProvider._resolve_product_ids` gives each pretix item one, by reference: the event's
+  prefix + `Line.catalog_key`, i.e. `pretix-item-<item.pk>` unless the product page set its
+  own reference (`ItemSettings`) — and each fee type one, `pretix-fee-<fee_type>`:
+  `products/getByReference` (exact; a failed lookup raises rather than inserting a duplicate),
+  else `products/insert` — the official WooCommerce plugin's approach. **References are
+  checked against `reference_limit` first**, before any lookup: `moloni_reference_limit`
+  (default and hard ceiling `MAX_REFERENCE_LENGTH` = 30 — the form's `max_value`, and the
+  property clamps a stored higher value) — an over-long one is a `MoloniAPIError` naming the
+  product, since the fix is on our side (shorten the reference or the prefix). The form's
+  `clean()` also refuses a prefix that leaves fewer than `orderdata.MIN_REFERENCE_ROOM` (12)
+  characters — it reads the posted `ptinvoicing_reference_prefix` straight off `self.data`,
+  since that field belongs to the generic form on the same page.
+  **Category tree, not a setting**: a created product goes under `Pretix` > `<event name>`
+  (`_category_id`: `ROOT_CATEGORY`, then `one_line(event.name, 100)`), each level found by
+  name through `productCategories/getAll` (paged by its 50 maximum) or created with
+  `productCategories/insert` — only when a product is actually created, so most orders never
+  touch categories. A company's catalog then reads by event; a product already created in an
+  older category is found by reference and stays there. The former
+  `moloni_product_category_id` setting is gone (an event that saved it keeps an unused key).
+  Type: the product page's `moloni_type` (`item_fields()`; `PRODUCT_TYPES` are Moloni's 1
+  product / 2 service / 3 other / 4 taxes-fees) else the event's `moloni_product_type`; unit
+  and tax/exemption from the event's settings; `products/insert` wants the tax's rate `value`
+  too, fetched from `taxes/getAll` only when a product is actually created. Item pks are
+  install-wide unique, so events sharing a Moloni company share products per item, not per event
+  — unless two events give products the same custom reference, which only the admin can avoid.
 - `__init__.py` — `MoloniSettingsForm` (thirteen fields, four of them credentials) and
   `MoloniProvider`. `_next_customer_number()` calls `customers/getNextNumber` before every
   `customers/insert` — one of several fields Moloni's docs mark required on that endpoint that
@@ -802,8 +864,8 @@ real account.
   final-consumer approach, so buyers don't each get a new customer. `country_id` comes from
   `countries/getAll` by ISO code for anyone outside Portugal — never defaulted to Portugal.
   Its `lookups()` returns the company list plus tax exemptions (global), and once a company is set,
-  both document sets, tax, payment method and maturity date — same `{field: [{id, label}]}`
-  contract.
+  both document sets, tax, payment method, maturity date and unit — same `{field: [{id, label}]}`
+  contract. No category lookup any more: products go under the Pretix > event tree above.
 - Line taxes follow the rate **pretix actually charged** on each position (`payload.line_tax`, used
   by both document lines and `products/insert`): a taxed line sends `moloni_tax_id` **with its rate
   as `value`** (a real account rejected line taxes without one, "must be float, greater than 0"),

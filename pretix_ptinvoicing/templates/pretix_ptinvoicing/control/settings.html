@@ -22,7 +22,8 @@
           data-text-failed="{% trans "Could not load options:" %}"
           data-text-unknown="{% trans "unknown error" %}"
           data-text-unreachable="{% trans "Could not reach the server to load options." %}"
-          data-text-saved="{% trans "Saved value (no longer listed):" %}">
+          data-text-saved="{% trans "Saved value (no longer listed):" %}"
+          data-text-prefix-note="{% trans "With {provider}, prefix and product reference together may be at most {limit} characters: {left} left for the reference." %}">
         {% csrf_token %}
         {% bootstrap_form_errors select_form %}
         {% comment %}
@@ -51,7 +52,27 @@
                 <span class="help-block">{{ select_form.ptinvoicing_provider.help_text }}</span>
             </div>
         </div>
-        {% bootstrap_form select_form layout="horizontal" exclude="ptinvoicing_provider" %}
+        {% comment %}
+            The prefix is rendered by hand too, so the note about the selected provider's
+            reference limit sits in its own element for settings.js to keep current as the
+            admin types (the server renders it for the saved provider and prefix).
+        {% endcomment %}
+        {% with field=select_form.ptinvoicing_reference_prefix %}
+            <div class="form-group{% if field.errors %} has-error{% endif %}">
+                <label class="col-md-3 control-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                <div class="col-md-9">
+                    {{ field }}
+                    {% for error in field.errors %}
+                        <span class="help-block text-danger">{{ error }}</span>
+                    {% endfor %}
+                    <span class="help-block">
+                        {{ field.help_text }}
+                        <span id="ptinvoicing-prefix-note">{{ select_form.prefix_note }}</span>
+                    </span>
+                </div>
+            </div>
+        {% endwith %}
+        {% bootstrap_form select_form layout="horizontal" exclude="ptinvoicing_provider,ptinvoicing_reference_prefix" %}
 
         <fieldset>
             <legend>{% trans "E-mail" %}</legend>
@@ -61,7 +82,8 @@
 
         {% for block in provider_blocks %}
             <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}"
-                      data-lookup-triggers="{{ block.provider.lookup_triggers|join:" " }}">
+                      data-lookup-triggers="{{ block.provider.lookup_triggers|join:" " }}"
+                      data-reference-limit-field="{{ block.provider.reference_limit_field|default:"" }}">
                 <legend>{{ block.label }}</legend>
                 {% if not block.provider.in_use %}
                     {% comment %}

@@ -9,13 +9,25 @@ since those are its API's rules.
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
+
+from django.core.exceptions import ObjectDoesNotExist
 
 logger = logging.getLogger(__name__)
 
 FINAL_CONSUMER_NIF = "999999990"
 FINAL_CONSUMER_NAME = "Consumidor Final"
+
+# What goes in front of every product reference at the provider unless the event says
+# otherwise; "pretix-" + "item-12" is what accounts set up before the prefix was
+# configurable already hold.
+DEFAULT_REFERENCE_PREFIX = "pretix-"
+# A fallback reference ("item-1234567") must always fit after the prefix, whatever the
+# provider's limit: the prefix has to leave at least this much room.
+MIN_REFERENCE_ROOM = 12
+# The shapes the fallback references take; a configured reference may not look like one.
+RESERVED_REFERENCE = re.compile(r"^(item-\d+|fee-.*)$")
 
 
 @dataclass
@@ -25,13 +37,21 @@ class Line:
     name: str
     gross: Decimal
     tax_rate: Decimal
-    # Stable per pretix product/fee kind — Moloni keys its catalog products on it.
+    # Stable per pretix product/fee kind — Moloni keys its catalog products on it. The
+    # product's configured reference (ItemSettings) or "item-<pk>"; fees "fee-<type>".
+    # Without the event's prefix: that's the provider's to add (reference_prefix).
     catalog_key: str
     # Unique per line — the line's own reference on the document.
     reference: str
     qty: int = 1
     # Net unit price, 8 decimals — set by set_nets(), which explains the choice.
     net: Decimal = None
+    # The product's provider-specific settings (ItemSettings.data), {} for a fee.
+    item_settings: dict = field(default_factory=dict)
+    # What the catalog product is called: the item's own name, never the line's — an
+    # itemized line carries the attendee ("Regular ticket — Ana"), and Moloni printed
+    # the first buyer's name under every later sale of a product created from one.
+    catalog_name: str = ""
 
     @property
     def exact_net(self):
@@ -121,7 +141,9 @@ def invoice_lines(order):
     # Identical tickets share one line with a quantity — one line per attendee only when
     # the buyer asked for it. Also what keeps unit prices clean (set_nets).
     lines = {}
-    for p in order.positions.select_related("item").order_by("positionid"):
+    for p in order.positions.select_related(
+        "item", "item__ptinvoicing_settings"
+    ).order_by("positionid"):
         name = (
             f"{p.item.name} — {p.attendee_name}"
             if itemize and p.attendee_name
@@ -131,12 +153,15 @@ def invoice_lines(order):
         if key in lines:
             lines[key].qty += 1
             continue
+        settings = item_settings(p.item)
         lines[key] = Line(
             name=name,
             gross=p.price,
             tax_rate=p.tax_rate,
-            catalog_key=f"item-{p.item_id}",
+            catalog_key=item_reference(p.item, settings),
             reference=f"pretix-{p.pk}",
+            item_settings=dict(settings.data) if settings else {},
+            catalog_name=str(p.item.name),
         )
     lines = list(lines.values())
     lines += [
@@ -146,11 +171,38 @@ def invoice_lines(order):
             tax_rate=f.tax_rate,
             catalog_key=f"fee-{f.fee_type}",
             reference=f"pretix-fee-{f.pk}",
+            # A fee's description is per order ("Shipping to Porto"); the catalog
+            # product is the kind of fee.
+            catalog_name=str(f.get_fee_type_display()),
         )
         for f in order.fees.all()
         if f.value
     ]
     return set_nets(lines)
+
+
+def item_settings(item):
+    """The product's ItemSettings row, or None — most products never get one."""
+    try:
+        return item.ptinvoicing_settings
+    except ObjectDoesNotExist:
+        return None
+
+
+def item_reference(item, settings=None):
+    """
+    The product's catalog reference, without the event's prefix: what the organizer
+    typed on the product page, else the pretix id, "item-<pk>" — stable, and unique
+    across the whole install, so events sharing a provider account don't collide.
+    """
+    settings = settings or item_settings(item)
+    return (settings and settings.reference) or f"item-{item.pk}"
+
+
+def reference_prefix(event):
+    """What the provider's catalog references start with, e.g. "pretix-"."""
+    prefix = event.settings.get("ptinvoicing_reference_prefix")
+    return DEFAULT_REFERENCE_PREFIX if prefix is None else str(prefix).strip()
 
 
 def one_line(value, limit):
