@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-08 23:47+0100\n"
+"POT-Creation-Date: 2026-10-20 20:26+0100\n"
 "PO-Revision-Date: 2026-10-01 23:00+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -20,13 +20,22 @@ msgid "Portuguese invoicing"
 msgstr "Faturação portuguesa"
 
 msgid ""
-"Issues AT-certified invoice-receipts through a Portuguese invoicing provider "
-"(currently Fact.pt) asynchronously after payment confirmation, with a "
-"tracking and retry panel."
+"Issues AT-certified invoice-receipts and credit notes through a Portuguese "
+"invoicing provider (Fact.pt or Moloni) asynchronously after payment "
+"confirmation, with a tracking and retry panel."
 msgstr ""
-"Emite faturas-recibo certificadas pela AT através de um serviço de faturação "
-"português (atualmente o Fact.pt), de forma assíncrona após a confirmação do "
-"pagamento, com um painel de acompanhamento e novas tentativas."
+"Emite faturas-recibo e notas de crédito certificadas pela AT através de um "
+"serviço de faturação português (Fact.pt ou Moloni), de forma assíncrona após "
+"a confirmação do pagamento, com um painel de acompanhamento e novas "
+"tentativas."
+
+#, python-format
+msgid ""
+"With %(provider)s, prefix and product reference together may be at most "
+"%(limit)s characters: %(left)s left for the reference."
+msgstr ""
+"Com o %(provider)s, prefixo e referência do produto juntos têm no máximo "
+"%(limit)s caracteres: ficam %(left)s para a referência."
 
 msgid "Invoicing provider"
 msgstr "Serviço de faturação"
@@ -39,6 +48,18 @@ msgid ""
 msgstr ""
 "Só as definições do serviço selecionado abaixo são guardadas e usadas na "
 "emissão."
+
+msgid "Product reference prefix"
+msgstr "Prefixo das referências de produto"
+
+msgid ""
+"Put in front of every product's reference in the provider's catalog, e.g. "
+"“pretix-” makes the reference “pretix-item-12”. Products already created "
+"there keep the reference they were created with."
+msgstr ""
+"Antecede a referência de cada produto no catálogo do serviço de faturação, "
+"p. ex. “pretix-” dá a referência “pretix-item-12”. Os artigos já criados lá "
+"mantêm a referência com que foram criados."
 
 msgid "Issue documents automatically"
 msgstr "Emitir documentos automaticamente"
@@ -104,6 +125,39 @@ msgstr "Enviar a nota de crédito por e-mail ao comprador"
 
 msgid "Sends the credit note as a PDF attachment once it is issued."
 msgstr "Envia a nota de crédito como anexo PDF assim que é emitida."
+
+msgid "Invoicing (PT)"
+msgstr "Faturação PT"
+
+#, python-format
+msgid ""
+"The product's reference in %(provider)s's catalog, after the prefix "
+"“%(prefix)s” set in the invoicing settings. Leave empty to use the pretix "
+"id: %(prefix)s%(fallback)s. Only matters before the product first exists "
+"there; later changes create a new catalog product."
+msgstr ""
+"A referência do produto no catálogo do %(provider)s, a seguir ao prefixo "
+"“%(prefix)s” definido nas definições de faturação. Deixe vazio para usar o "
+"id do pretix: %(prefix)s%(fallback)s. Só conta antes de o artigo existir lá; "
+"alterar depois cria um novo artigo no catálogo."
+
+#, python-format
+msgid ""
+"At most %(room)s characters: %(provider)s allows %(limit)s in total and the "
+"prefix takes %(used)s."
+msgstr ""
+"No máximo %(room)s caracteres: o %(provider)s permite %(limit)s no total e o "
+"prefixo ocupa %(used)s."
+
+msgid "Product reference"
+msgstr "Referência do produto"
+
+msgid "References of the form “item-<number>” or “fee-…” are reserved."
+msgstr "As referências da forma “item-<número>” ou “fee-…” estão reservadas."
+
+#, python-format
+msgid "“%(reference)s” is already the reference of “%(item)s”."
+msgstr "“%(reference)s” já é a referência de “%(item)s”."
 
 #, python-brace-format
 msgid "Your invoice-receipt {number} for order {code}"
@@ -292,6 +346,12 @@ msgstr "Erro desconhecido do Fact.pt"
 msgid "Could not download the document from Fact.pt: %(error)s"
 msgstr "Não foi possível descarregar o documento do Fact.pt: %(error)s"
 
+msgid "Other"
+msgstr "Outro"
+
+msgid "Taxes/fees"
+msgstr "Impostos/taxas"
+
 msgid "Developer ID (client_id)"
 msgstr "ID de programador (client_id)"
 
@@ -347,21 +407,39 @@ msgstr ""
 "A fatura-recibo é um dos documentos auto-liquidados do Moloni e leva sempre "
 "um pagamento; esta é a forma de pagamento com que fica registado."
 
-msgid "Product category (Moloni)"
-msgstr "Categoria de artigos (Moloni)"
-
-msgid ""
-"Each pretix product is created in Moloni's catalog on its first sale, in "
-"this category."
-msgstr ""
-"Cada produto do pretix é criado no catálogo do Moloni na sua primeira venda, "
-"nesta categoria."
-
 msgid "Product type (Moloni)"
 msgstr "Tipo de artigo (Moloni)"
 
+msgid ""
+"How each pretix product is created in Moloni's catalog on its first sale, "
+"unless the product's own page says otherwise."
+msgstr ""
+"Como cada produto do pretix é criado no catálogo do Moloni na sua primeira "
+"venda, salvo indicação na página do próprio produto."
+
 msgid "Unit (Moloni)"
 msgstr "Unidade (Moloni)"
+
+msgid "Reference limit (Moloni)"
+msgstr "Limite da referência (Moloni)"
+
+#, python-brace-format
+msgid ""
+"Moloni product references take at most {max} characters, the prefix above "
+"included. Lower it if your account allows fewer; it can never be raised "
+"above {max}."
+msgstr ""
+"As referências de artigo no Moloni têm no máximo {max} caracteres, incluindo "
+"o prefixo acima. Baixe-o se a sua conta permitir menos; nunca pode ser "
+"subido acima de {max}."
+
+#, python-format
+msgid ""
+"The prefix “%(prefix)s” leaves fewer than %(room)s of the %(limit)s "
+"characters for the product reference. Shorten the prefix."
+msgstr ""
+"O prefixo “%(prefix)s” deixa menos de %(room)s dos %(limit)s caracteres para "
+"a referência do produto. Encurte o prefixo."
 
 msgid "Maturity date (Moloni)"
 msgstr "Prazo de vencimento (Moloni)"
@@ -372,6 +450,19 @@ msgid ""
 msgstr ""
 "O Moloni exige um em cada novo cliente que cria para um comprador, por "
 "exemplo \"Pronto pagamento\"."
+
+msgid "Type (Moloni)"
+msgstr "Tipo (Moloni)"
+
+msgid "Event default"
+msgstr "Predefinição do evento"
+
+msgid ""
+"How this product is created in Moloni's catalog on its first sale; the "
+"invoicing settings hold the event's default."
+msgstr ""
+"Como este produto é criado no catálogo do Moloni na sua primeira venda; a "
+"predefinição do evento está nas definições de faturação."
 
 #, python-format
 msgid ""
@@ -391,8 +482,21 @@ msgstr "O Moloni não devolveu um id de morada alternativa."
 msgid "Moloni has no country with code %(code)s."
 msgstr "O Moloni não tem nenhum país com o código %(code)s."
 
+#, python-format
+msgid ""
+"The reference “%(reference)s” of “%(name)s” has %(length)s characters; "
+"Moloni allows %(limit)s. Shorten the product's reference on its page, or the "
+"prefix in the invoicing settings."
+msgstr ""
+"A referência “%(reference)s” de “%(name)s” tem %(length)s caracteres; o "
+"Moloni permite %(limit)s. Encurte a referência do produto na sua página, ou "
+"o prefixo nas definições de faturação."
+
 msgid "Moloni did not return a product id."
 msgstr "O Moloni não devolveu um id de artigo."
+
+msgid "Moloni did not return a category id."
+msgstr "O Moloni não devolveu um id de categoria."
 
 msgid ""
 "This order has 0% VAT lines, which Moloni only accepts with an exemption "
@@ -511,9 +615,6 @@ msgstr "Discriminar a fatura por participante"
 
 msgid "Each ticket's line on the invoice shows the attendee's name."
 msgstr "A linha de cada bilhete na fatura indica o nome do participante."
-
-msgid "Invoicing (PT)"
-msgstr "Faturação PT"
 
 #, python-format
 msgid ""
@@ -730,6 +831,14 @@ msgstr "Não foi possível contactar o servidor para carregar as opções."
 msgid "Saved value (no longer listed):"
 msgstr "Valor guardado (já não consta da lista):"
 
+#, python-brace-format
+msgid ""
+"With {provider}, prefix and product reference together may be at most "
+"{limit} characters: {left} left for the reference."
+msgstr ""
+"Com o {provider}, prefixo e referência do produto juntos têm no máximo "
+"{limit} caracteres: ficam {left} para a referência."
+
 msgid "E-mail"
 msgstr "E-mail"
 
@@ -820,6 +929,9 @@ msgstr "Serviço de faturação desconhecido."
 
 msgid "Invoicing settings saved."
 msgstr "Definições de faturação guardadas."
+
+#~ msgid "Product category (Moloni)"
+#~ msgstr "Categoria de artigos (Moloni)"
 
 #~ msgid "Decimal places of the API key's series"
 #~ msgstr "Casas decimais da série da chave da API"

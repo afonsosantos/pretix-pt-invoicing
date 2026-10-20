@@ -553,7 +553,6 @@ def test_saving_one_provider_leaves_the_other_untouched(logged_in_client, event)
             "moloni-moloni_credit_note_document_set_id": "4",
             "moloni-moloni_payment_method_id": "5",
             "moloni-moloni_maturity_date_id": "9",
-            "moloni-moloni_product_category_id": "20",
             "moloni-moloni_product_type": "2",
             "moloni-moloni_unit_id": "1",
         },
@@ -566,6 +565,164 @@ def test_saving_one_provider_leaves_the_other_untouched(logged_in_client, event)
         assert event.settings.get("moloni_company_id", as_type=int) == 7
         # Fact.pt's required token was neither validated nor cleared.
         assert event.settings.get("factpt_token") == "keep-me"
+
+
+@pytest.mark.django_db
+def test_settings_page_shows_the_prefix_and_the_limit_note(logged_in_client, event):
+    url = SETTINGS_URL.format(event.organizer.slug, event.slug)
+    body = logged_in_client.get(url).content.decode()
+    # The default prefix prefilled, no note yet: no provider is selected.
+    assert 'name="ptinvoicing_reference_prefix"' in body
+    assert 'value="pretix-"' in body
+    assert '<span id="ptinvoicing-prefix-note"></span>' in body
+    # Moloni's fieldset tells settings.js which field holds the limit.
+    assert 'data-reference-limit-field="moloni_reference_limit"' in body
+    assert 'data-reference-limit-field=""' in body  # Fact.pt keeps no catalog
+
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "moloni"
+        event.settings.ptinvoicing_reference_prefix = "ev-"
+    body = logged_in_client.get(url).content.decode()
+    assert (
+        "With Moloni, prefix and product reference together may be at most 30" in body
+    )
+    assert "27 left for the reference" in body
+
+
+def _item_form(event, item, data=None):
+    from django.test import RequestFactory
+
+    from pretix_ptinvoicing.signals import ptinvoicing_item_forms
+
+    request = RequestFactory().post("/", data) if data is not None else None
+    if request is None:
+        request = RequestFactory().get("/")
+    return ptinvoicing_item_forms(event, request=request, item=item)
+
+
+@pytest.mark.django_db
+def test_product_page_form_only_with_a_provider(event, item):
+    assert _item_form(event, item) is None
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "moloni"
+    form = _item_form(event, item)
+    assert form.title == "Invoicing (PT)"
+    assert list(form.fields) == ["reference", "moloni_type"]
+    # 30 for Moloni, 7 taken by "pretix-".
+    assert form.fields["reference"].max_length == 23
+    assert f"pretix-item-{item.pk}" in form.fields["reference"].help_text
+
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+    form = _item_form(event, item)
+    # Fact.pt invoices lines inline: no per-product fields, no limit on the reference.
+    assert list(form.fields) == ["reference"]
+    assert form.fields["reference"].max_length == 50
+
+
+@pytest.mark.django_db
+def test_product_page_form_saves_validates_and_clears(event, item):
+    from pretix.base.models import Item
+
+    from pretix_ptinvoicing.models import ItemSettings
+    from pretix_ptinvoicing.orderdata import item_reference
+
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "moloni"
+        other = Item.objects.create(event=event, name="Other", default_price=1)
+        ItemSettings.objects.create(item=other, reference="taken")
+
+    def post(**data):
+        form = _item_form(event, item, {f"ptinvoicing-{k}": v for k, v in data.items()})
+        valid = form.is_valid()
+        if valid:
+            form.save()
+        return form, valid
+
+    # Too long for what the prefix leaves.
+    form, valid = post(reference="x" * 24)
+    assert not valid and "reference" in form.errors
+    # The fallback shapes are reserved: they'd collide with another product's.
+    form, valid = post(reference="item-99")
+    assert not valid and "reserved" in str(form.errors["reference"])
+    # Another product of the event already has it.
+    form, valid = post(reference="taken")
+    assert not valid and "Other" in str(form.errors["reference"])
+    # A type Moloni doesn't know.
+    form, valid = post(moloni_type="9")
+    assert not valid and "moloni_type" in form.errors
+
+    form, valid = post(reference=" bilhete ", moloni_type="1")
+    assert valid
+    with scopes_disabled():
+        saved = ItemSettings.objects.get(item=item)
+        assert saved.reference == "bilhete"
+        assert saved.data == {"moloni_type": 1}
+        assert item_reference(item) == "bilhete"
+        # Prefilled next time.
+        form = _item_form(event, item)
+        assert form.initial == {"reference": "bilhete", "moloni_type": 1}
+
+    # Cleared: the row goes, the reference falls back to the pretix id.
+    form, valid = post(reference="", moloni_type="")
+    assert valid
+    with scopes_disabled():
+        assert not ItemSettings.objects.filter(item=item).exists()
+        assert item_reference(Item.objects.get(pk=item.pk)) == f"item-{item.pk}"
+
+
+@pytest.mark.django_db
+def test_lines_carry_the_product_reference_and_settings(event, order, item, position):
+    from pretix_ptinvoicing.models import ItemSettings
+    from pretix_ptinvoicing.orderdata import invoice_lines
+
+    with scopes_disabled():
+        [line] = invoice_lines(order)
+        assert line.catalog_key == f"item-{item.pk}"
+        assert line.item_settings == {}
+
+        ItemSettings.objects.create(
+            item=item, reference="geral", data={"moloni_type": 3}
+        )
+        [line] = invoice_lines(order)
+        assert line.catalog_key == "geral"
+        assert line.item_settings == {"moloni_type": 3}
+
+
+@pytest.mark.django_db
+def test_copying_a_product_keeps_the_type_but_not_the_reference(event, item):
+    from pretix.base.models import Item
+
+    from pretix_ptinvoicing.models import ItemSettings
+    from pretix_ptinvoicing.signals import ptinvoicing_item_copy
+
+    with scopes_disabled():
+        ItemSettings.objects.create(
+            item=item, reference="geral", data={"moloni_type": 1}
+        )
+        copy = Item.objects.create(event=event, name="Copy", default_price=1)
+        ptinvoicing_item_copy(event, source=item, target=copy)
+        copied = ItemSettings.objects.get(item=copy)
+        assert copied.reference == ""
+        assert copied.data == {"moloni_type": 1}
+
+        # Nothing to copy: no row.
+        plain = Item.objects.create(event=event, name="Plain", default_price=1)
+        another = Item.objects.create(event=event, name="Another", default_price=1)
+        ptinvoicing_item_copy(event, source=plain, target=another)
+        assert not ItemSettings.objects.filter(item=another).exists()
+
+
+@pytest.mark.django_db
+def test_product_page_renders_the_invoicing_form(logged_in_client, event, item):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "moloni"
+    body = logged_in_client.get(
+        f"/control/event/{event.organizer.slug}/{event.slug}/items/{item.pk}/"
+    ).content.decode()
+    assert "Invoicing (PT)" in body
+    assert 'name="ptinvoicing-reference"' in body
+    assert 'name="ptinvoicing-moloni_type"' in body
 
 
 @pytest.mark.django_db

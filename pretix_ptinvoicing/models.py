@@ -175,3 +175,25 @@ class IssuedInvoice(models.Model):
 
         cls = PROVIDERS.get(self.provider)
         return cls.verbose_name if cls else self.provider
+
+
+class ItemSettings(models.Model):
+    """
+    Per-product invoicing settings, edited on the product page's "Invoicing (PT)" form
+    (signals.ptinvoicing_item_forms). One row per product that has any set.
+    """
+
+    item = models.OneToOneField(
+        "pretixbase.Item",
+        related_name="ptinvoicing_settings",
+        on_delete=models.CASCADE,
+    )
+    # The product's reference in the provider's catalog, without the event's prefix
+    # (ptinvoicing_reference_prefix). Blank = the pretix id, "item-<pk>".
+    reference = models.CharField(max_length=50, blank=True, default="")
+    # Provider-specific per-product fields (InvoiceProvider.item_fields), namespaced by
+    # hand like event settings are — e.g. Moloni's "moloni_type".
+    data = models.JSONField(default=dict, blank=True)
+
+    def __str__(self):
+        return f"{self.item} — {self.reference or '-'}"

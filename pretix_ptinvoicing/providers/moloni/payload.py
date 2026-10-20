@@ -88,17 +88,25 @@ def line_tax(line, event_settings, tax_rate):
     }
 
 
-def build_catalog_product(line, reference, event_settings, company_id, tax_rate):
+def build_catalog_product(
+    line, reference, category_id, event_settings, company_id, tax_rate
+):
     """
     products/insert for the pretix item (or fee kind) behind `line`, created on its
-    first sale. Type, unit and tax come from the event's settings, like Fact.pt's item
+    first sale, in `category_id` (Pretix > <event>, MoloniProvider._category_id). Type
+    comes from the product's own page when set there (ItemSettings' moloni_type), else
+    the event's default; unit and tax from the event's settings, like Fact.pt's item
     defaults.
     """
     return {
         "company_id": company_id,
-        "category_id": event_settings.get("moloni_product_category_id", as_type=int),
-        "type": event_settings.get("moloni_product_type", as_type=int, default=2),
-        "name": line.name[:100],
+        "category_id": category_id,
+        "type": line.item_settings.get("moloni_type")
+        or event_settings.get("moloni_product_type", as_type=int, default=2),
+        # The item's name, not the line's: Moloni prints the catalog name under any
+        # line whose name differs, so an attendee's name here would follow the product
+        # onto every later document.
+        "name": (line.catalog_name or line.name)[:100],
         "reference": reference,
         # Only the catalog default; every document line sends its own price.
         "price": float(line.net),

@@ -6,10 +6,18 @@ from decimal import Decimal
 import requests
 from django import forms
 from django.utils import timezone
+from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
 
-from ...orderdata import FINAL_CONSUMER_NIF, bare_tin, invoice_lines
+from ...orderdata import (
+    FINAL_CONSUMER_NIF,
+    MIN_REFERENCE_ROOM,
+    bare_tin,
+    invoice_lines,
+    one_line,
+    reference_prefix,
+)
 from ..base import (
     InvoiceProvider,
     IssuedDocument,
@@ -30,6 +38,23 @@ __all__ = ["MoloniAPIError", "MoloniClient", "MoloniProvider", "MoloniSettingsFo
 logger = logging.getLogger(__name__)
 
 DOWNLOAD_URL = "https://www.moloni.pt/downloads/index.php"
+
+# Moloni's product references take at most this many characters; an account may be set
+# lower (moloni_reference_limit), never higher.
+MAX_REFERENCE_LENGTH = 30
+# The top-level catalog category every event's products go under: Pretix > <event name>
+# > products. Created on the first product, found by name after that.
+ROOT_CATEGORY = "Pretix"
+# Moloni's own category name limit isn't documented; this is safely short.
+MAX_CATEGORY_NAME = 100
+
+# products/insert's `type` (docs: 1 product, 2 service, 3 other, 4 taxes/fees).
+PRODUCT_TYPES = [
+    (1, _("Product")),
+    (2, _("Service")),
+    (3, _("Other")),
+    (4, _("Taxes/fees")),
+]
 
 
 class MoloniSettingsForm(SettingsForm):
@@ -80,20 +105,53 @@ class MoloniSettingsForm(SettingsForm):
     )
     # Moloni only invoices catalog products, so each pretix item gets one, created on
     # its first sale — these are what it's created with (like Fact.pt's item defaults).
-    moloni_product_category_id = forms.IntegerField(
-        label=_("Product category (Moloni)"),
-        help_text=_(
-            "Each pretix product is created in Moloni's catalog on its first sale, "
-            "in this category."
-        ),
-    )
+    # Its category is not a setting: products go under Pretix > <event name>, created
+    # as needed (MoloniProvider._category_id).
     moloni_product_type = forms.TypedChoiceField(
         label=_("Product type (Moloni)"),
         coerce=int,
         initial=2,
-        choices=[(2, _("Service")), (1, _("Product"))],
+        choices=[(2, _("Service")), (1, _("Product")), (3, _("Other"))],
+        help_text=_(
+            "How each pretix product is created in Moloni's catalog on its first sale, "
+            "unless the product's own page says otherwise."
+        ),
     )
     moloni_unit_id = forms.IntegerField(label=_("Unit (Moloni)"))
+    moloni_reference_limit = forms.IntegerField(
+        label=_("Reference limit (Moloni)"),
+        required=False,
+        initial=MAX_REFERENCE_LENGTH,
+        min_value=MIN_REFERENCE_ROOM + 1,
+        max_value=MAX_REFERENCE_LENGTH,
+        # format_lazy, not %: at class-definition time no language is active.
+        help_text=format_lazy(
+            _(
+                "Moloni product references take at most {max} characters, the prefix "
+                "above included. Lower it if your account allows fewer; it can never be "
+                "raised above {max}."
+            ),
+            max=MAX_REFERENCE_LENGTH,
+        ),
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        limit = cleaned.get("moloni_reference_limit") or MAX_REFERENCE_LENGTH
+        # The prefix is on the same page but in the generic form (unprefixed name): the
+        # posted value if there is one, else what's saved.
+        prefix = self.data.get("ptinvoicing_reference_prefix")
+        prefix = reference_prefix(self.obj) if prefix is None else prefix.strip()
+        if len(prefix) > limit - MIN_REFERENCE_ROOM:
+            self.add_error(
+                "moloni_reference_limit",
+                _(
+                    "The prefix “%(prefix)s” leaves fewer than %(room)s of the %(limit)s "
+                    "characters for the product reference. Shorten the prefix."
+                )
+                % {"prefix": prefix, "room": MIN_REFERENCE_ROOM, "limit": limit},
+            )
+        return cleaned
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -158,6 +216,7 @@ class MoloniProvider(InvoiceProvider):
     settings_template = "pretix_ptinvoicing/control/moloni_connection.html"
     logo = "pretix_ptinvoicing/logos/moloni.svg"
     lookup_triggers = ("moloni_company_id",)
+    reference_limit_field = "moloni_reference_limit"
 
     @property
     def is_configured(self):
@@ -171,10 +230,29 @@ class MoloniProvider(InvoiceProvider):
                 "moloni_credit_note_document_set_id",
                 "moloni_payment_method_id",
                 "moloni_maturity_date_id",
-                "moloni_product_category_id",
                 "moloni_unit_id",
             )
         )
+
+    @property
+    def reference_limit(self):
+        limit = self.settings.get("moloni_reference_limit", as_type=int)
+        return min(limit, MAX_REFERENCE_LENGTH) if limit else MAX_REFERENCE_LENGTH
+
+    def item_fields(self):
+        return {
+            "moloni_type": forms.TypedChoiceField(
+                label=_("Type (Moloni)"),
+                coerce=int,
+                required=False,
+                empty_value=None,
+                choices=[("", _("Event default")), *PRODUCT_TYPES],
+                help_text=_(
+                    "How this product is created in Moloni's catalog on its first "
+                    "sale; the invoicing settings hold the event's default."
+                ),
+            )
+        }
 
     def _has_password(self):
         return bool(
@@ -374,8 +452,13 @@ class MoloniProvider(InvoiceProvider):
         A customer is shared — by every order with that NIF, or every final consumer of
         that name — so its own record is never overwritten with one buyer's address (and
         an invoice already issued against it keeps its own). Instead the address goes in
-        as one of Moloni's customer alternate addresses, keyed by a hash of the address
-        in `code`, so the same address is found again rather than added twice.
+        as one of Moloni's customer alternate addresses, keyed by a hash of the name and
+        address in `code`, so the same one is found again rather than added twice.
+
+        Moloni prints the alternate address in the document's header *with its
+        `designation` as the name line* (seen on a real FR: sending the street there
+        printed the street twice and no name), so the designation is the buyer's name —
+        and part of the key, since two buyers can share a NIF's customer record.
         """
         fields = ("address", "city", "zip_code", "country_id")
         if customer["address"] == "-" and customer["city"] == "-":
@@ -388,7 +471,7 @@ class MoloniProvider(InvoiceProvider):
         code = (
             "pretix-"
             + hashlib.sha1(
-                "|".join(str(customer[k]) for k in fields).encode()
+                "|".join(str(customer[k]) for k in ("name", *fields)).encode()
             ).hexdigest()[:10]
         )
         payload = {"company_id": company_id, "customer_id": int(found["customer_id"])}
@@ -402,7 +485,7 @@ class MoloniProvider(InvoiceProvider):
             "customerAlternateAddresses/insert",
             {
                 **payload,
-                "designation": customer["address"][:50],
+                "designation": customer["name"][:50],
                 "code": code,
                 **{k: customer[k] for k in fields},
             },
@@ -434,16 +517,43 @@ class MoloniProvider(InvoiceProvider):
         {line.catalog_key: Moloni product_id} for the order's lines.
 
         Moloni only invoices catalog products, so each pretix item — and each kind of
-        fee — gets one, keyed by reference `pretix-item-<pk>` / `pretix-fee-<type>`:
-        found if it already exists, created otherwise (the official WooCommerce plugin
-        does the same). Item pks are unique across the whole pretix install, so events
-        sharing a Moloni company don't collide.
+        fee — gets one, keyed by reference: the event's prefix plus the product's
+        reference from its page, else its pretix id (`pretix-item-<pk>`, fees
+        `pretix-fee-<type>`). Found if it already exists, created otherwise under
+        Pretix > <event name> (the official WooCommerce plugin resolves by reference the
+        same way). Item pks are unique across the whole pretix install, so events sharing
+        a Moloni company don't collide.
         """
+        prefix = reference_prefix(self.event)
+        limit = self.reference_limit
+        references = {}
+        for line in lines:
+            reference = references.setdefault(
+                line.catalog_key, prefix + line.catalog_key
+            )
+            # Refused up front, before any product or category is created: Moloni would
+            # reject (or worse, cut) it, and the fix is on our side.
+            if len(reference) > limit:
+                raise MoloniAPIError(
+                    _(
+                        "The reference “%(reference)s” of “%(name)s” has %(length)s "
+                        "characters; Moloni allows %(limit)s. Shorten the product's "
+                        "reference on its page, or the prefix in the invoicing settings."
+                    )
+                    % {
+                        "reference": reference,
+                        "name": line.name,
+                        "length": len(reference),
+                        "limit": limit,
+                    }
+                )
+
         product_ids = {}
+        category_id = None
         for line in lines:
             if line.catalog_key in product_ids:
                 continue
-            reference = f"pretix-{line.catalog_key}"
+            reference = references[line.catalog_key]
             # Not swallowed: a failed lookup must not fall through to creating the
             # product a second time.
             found = client.call(
@@ -459,11 +569,15 @@ class MoloniProvider(InvoiceProvider):
                 product_ids[line.catalog_key] = matches[0]["product_id"]
                 continue
 
+            if category_id is None:
+                # Only when something is actually created — most orders never get here.
+                category_id = self._category_id(client, company_id)
             created = client.call(
                 "products/insert",
                 build_catalog_product(
                     line,
                     reference,
+                    category_id,
                     self.settings,
                     company_id,
                     tax_rate,
@@ -474,6 +588,51 @@ class MoloniProvider(InvoiceProvider):
                 raise MoloniAPIError(_("Moloni did not return a product id."))
             product_ids[line.catalog_key] = product_id
         return product_ids
+
+    def _category_id(self, client, company_id):
+        """
+        The category new products are filed under: Pretix > <event name>, both found by
+        name or created. One tree per Moloni company, one branch per event — so the
+        catalog reads by event rather than as one flat list, and nothing is configured.
+        """
+        root = self._find_or_create_category(client, company_id, 0, ROOT_CATEGORY)
+        return self._find_or_create_category(
+            client, company_id, root, one_line(self.event.name, MAX_CATEGORY_NAME)
+        )
+
+    def _find_or_create_category(self, client, company_id, parent_id, name):
+        # getAll pages by 50 (its maximum): a company's "Pretix" branch can outgrow one
+        # page of events. A failed lookup raises, like every lookup here — it must not
+        # fall through to creating the category again.
+        offset = 0
+        while True:
+            page = (
+                client.call(
+                    "productCategories/getAll",
+                    {
+                        "company_id": company_id,
+                        "parent_id": parent_id,
+                        "qty": 50,
+                        "offset": offset,
+                    },
+                )
+                or []
+            )
+            for category in page:
+                if category.get("name") == name and category.get("category_id"):
+                    return int(category["category_id"])
+            if len(page) < 50:
+                break
+            offset += 50
+
+        created = client.call(
+            "productCategories/insert",
+            {"company_id": company_id, "parent_id": parent_id, "name": name},
+        )
+        category_id = (created or {}).get("category_id")
+        if not category_id:
+            raise MoloniAPIError(_("Moloni did not return a category id."))
+        return int(category_id)
 
     def _check_taxes(self, client, lines, company_id):
         """
@@ -765,24 +924,13 @@ class MoloniProvider(InvoiceProvider):
                 "maturity_date_id",
                 "name",
             ),
-            (
-                "moloni_product_category_id",
-                "productCategories/getAll",
-                "category_id",
-                "name",
-            ),
             ("moloni_unit_id", "measurementUnits/getAll", "unit_id", "name"),
         ):
-            # ponytail: top-level categories only (parent_id 0); walk the tree if
-            # someone needs to file tickets under a subcategory.
-            extra = {"parent_id": 0} if endpoint == "productCategories/getAll" else {}
             # Several fields share an endpoint (both document sets, the payment
             # methods): one call each.
             if endpoint not in fetched:
                 try:
-                    fetched[endpoint] = (
-                        client.call(endpoint, {**payload, **extra}) or []
-                    )
+                    fetched[endpoint] = client.call(endpoint, payload) or []
                 except MoloniAPIError:
                     fetched[endpoint] = None
             rows = fetched[endpoint]

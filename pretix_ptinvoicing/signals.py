@@ -19,16 +19,22 @@ from pretix.base.models import (
     OrderPayment,
     OrderRefund,
 )
-from pretix.base.signals import order_modified, order_paid, periodic_task
-from pretix.control.signals import nav_event, nav_event_settings
+from pretix.base.signals import (
+    item_copy_data,
+    order_modified,
+    order_paid,
+    periodic_task,
+)
+from pretix.control.signals import item_forms, nav_event, nav_event_settings
 from pretix.control.signals import order_info as control_order_info
 from pretix.helpers.periodic import minimum_interval
 from pretix.presale.signals import contact_form_fields, html_head
 from pretix.presale.signals import order_info_top as presale_order_info_top
 
+from .forms import ItemSettingsForm
 from .mail import send_billing_changed_email, send_connection_expired_email
-from .models import IssuedInvoice
-from .orderdata import billing_changed
+from .models import IssuedInvoice, ItemSettings
+from .orderdata import billing_changed, item_settings
 from .providers import get_provider
 from .tasks import issue_credit_note, issue_invoice
 
@@ -162,6 +168,31 @@ def ptinvoicing_contact_form_fields(sender, request, **kwargs):
             required=False,
         )
     }
+
+
+@receiver(item_forms, dispatch_uid="ptinvoicing_item_forms")
+def ptinvoicing_item_forms(sender, request, item, **kwargs):
+    # The "Invoicing (PT)" box on the product page: the product's catalog reference and
+    # the provider's own per-product fields. Nothing to set without a provider.
+    provider = get_provider(sender)
+    if provider is None:
+        return None
+    return ItemSettingsForm(
+        item=item,
+        provider=provider,
+        data=request.POST if request.method == "POST" else None,
+        prefix="ptinvoicing",
+    )
+
+
+@receiver(item_copy_data, dispatch_uid="ptinvoicing_item_copy")
+def ptinvoicing_item_copy(sender, source, target, **kwargs):
+    # A copied product keeps the provider fields (its type) but not the reference: that
+    # names one catalog product, and two pretix products sharing it would be invoiced
+    # under one name. The copy falls back to its own pretix id.
+    settings = item_settings(source)
+    if settings and settings.data:
+        ItemSettings.objects.create(item=target, data=dict(settings.data))
 
 
 @receiver(html_head, dispatch_uid="ptinvoicing_html_head")

@@ -12,10 +12,11 @@ class PluginApp(PluginConfig):
     class PretixPluginMeta:
         name = gettext_lazy("Portuguese invoicing")
         author = "Afonso Santos"
+        # Names every provider under providers/: keep in step when one is added.
         description = gettext_lazy(
-            "Issues AT-certified invoice-receipts through a Portuguese invoicing "
-            "provider (currently Fact.pt) asynchronously after payment confirmation, "
-            "with a tracking and retry panel."
+            "Issues AT-certified invoice-receipts and credit notes through a "
+            "Portuguese invoicing provider (Fact.pt or Moloni) asynchronously after "
+            "payment confirmation, with a tracking and retry panel."
         )
         visible = True
         version = __version__

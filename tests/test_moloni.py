@@ -84,7 +84,6 @@ def moloni_event(event, order):
         event.settings.moloni_exemption_reason = "M07"
         event.settings.moloni_payment_method_id = 5
         event.settings.moloni_maturity_date_id = 9
-        event.settings.moloni_product_category_id = 20
         event.settings.moloni_unit_id = 1
         order.status = Order.STATUS_PAID
         order.save(update_fields=["status"])
@@ -193,6 +192,7 @@ def _issue_to_moved_customer(event, order, alternates):
         InvoiceAddress.objects.create(
             order=order,
             vat_id="PT237892294",
+            name_parts={"_scheme": "full", "full_name": "Ana Silva"},
             country="PT",
             street="Rua Nova 1",
             zipcode="4000-001",
@@ -233,6 +233,9 @@ def test_new_address_goes_in_as_alternate_address(moloni_event, order, position)
     assert alternate["customer_id"] == 88
     assert alternate["address"] == "Rua Nova 1"
     assert alternate["zip_code"] == "4000-001"
+    # Printed by Moloni as the name line of the address: a real FR M/8 showed the
+    # street twice when the street was sent here.
+    assert alternate["designation"] == "Ana Silva"
     assert alternate["code"].startswith("pretix-")
     assert sent_to("invoiceReceipts/insert")["alternate_address_id"] == 5
 
@@ -547,6 +550,8 @@ def test_missing_catalog_product_is_created_once_per_item(
         json=[{"tax_id": 11, "value": 23}],
         status=200,
     )
+    # No "Pretix" category yet: both levels of the tree get created.
+    mock_categories({})
     responses.add(
         responses.POST,
         API.format("products/insert"),
@@ -572,14 +577,229 @@ def test_missing_catalog_product_is_created_once_per_item(
     assert len(inserts) == 1
     created = json.loads(inserts[0].request.body)
     assert created["reference"] == f"pretix-item-{item.pk}"
-    assert created["category_id"] == 20
     assert created["unit_id"] == 1
     assert created["type"] == 2  # service, the default
     assert created["exemption_reason"] == "M07"  # 0% lines, like the item's sales
     assert "taxes" not in created
+    # Filed under Pretix (top level, created first) > the event's name.
+    categories = [
+        json.loads(c.request.body)
+        for c in responses.calls
+        if "/productCategories/insert/" in c.request.url
+    ]
+    assert [(c["parent_id"], c["name"]) for c in categories] == [
+        (0, "Pretix"),
+        (CATEGORY_IDS["Pretix"], "Dummy"),
+    ]
+    assert created["category_id"] == CATEGORY_IDS["Dummy"]
     lines = sent_to("invoiceReceipts/insert")["products"]
     # Two identical tickets: one line, qty 2.
     assert [(line["product_id"], line["qty"]) for line in lines] == [(77, 2)]
+
+
+# What mock_categories hands out for each created category, by name.
+CATEGORY_IDS = {"Pretix": 500, "Dummy": 501}
+
+
+def mock_categories(existing):
+    """
+    productCategories/getAll and /insert against a company whose categories are
+    `existing`: {parent_id: [{"category_id", "name"}, ...]}.
+    """
+
+    def get_all(request):
+        body = json.loads(request.body)
+        return 200, {}, json.dumps(existing.get(body["parent_id"], []))
+
+    def insert(request):
+        body = json.loads(request.body)
+        return (
+            200,
+            {},
+            json.dumps({"valid": 1, "category_id": CATEGORY_IDS[body["name"]]}),
+        )
+
+    responses.add_callback(
+        responses.POST, API.format("productCategories/getAll"), callback=get_all
+    )
+    responses.add_callback(
+        responses.POST, API.format("productCategories/insert"), callback=insert
+    )
+
+
+def _issue_creating_product(order, event):
+    mock_grant()
+    mock_no_customer()
+    responses.add(
+        responses.POST, API.format("products/getByReference"), json=[], status=200
+    )
+    responses.add(
+        responses.POST,
+        API.format("products/insert"),
+        json={"valid": 1, "product_id": 77},
+        status=200,
+    )
+    responses.add(
+        responses.POST, API.format("customers/insert"), json={"customer_id": 1}
+    )
+    responses.add(
+        responses.POST, API.format("invoiceReceipts/insert"), json={"document_id": 1}
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_existing_category_tree_is_reused(moloni_event, order, item, position):
+    # Pretix > Dummy already exist (an earlier sale, or made by hand): found by name,
+    # nothing inserted — a second "Dummy" branch would scatter the event's products.
+    mock_categories(
+        {
+            0: [
+                {"category_id": 3, "name": "Bilhetes"},
+                {"category_id": 40, "name": "Pretix"},
+            ],
+            40: [{"category_id": 41, "name": "Dummy"}],
+        }
+    )
+    _issue_creating_product(order, moloni_event)
+
+    assert sent_to("products/insert")["category_id"] == 41
+    assert not [
+        c for c in responses.calls if "/productCategories/insert/" in c.request.url
+    ]
+    looked_up = [
+        json.loads(c.request.body)
+        for c in responses.calls
+        if "/productCategories/getAll/" in c.request.url
+    ]
+    assert [c["parent_id"] for c in looked_up] == [0, 40]
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_product_page_reference_and_type_are_used(moloni_event, order, item, position):
+    from pretix_ptinvoicing.models import ItemSettings
+
+    with scopes_disabled():
+        ItemSettings.objects.create(
+            item=item, reference="bilhete-geral", data={"moloni_type": 1}
+        )
+        moloni_event.settings.ptinvoicing_reference_prefix = "ev26-"
+    mock_categories({})
+    _issue_creating_product(order, moloni_event)
+
+    assert sent_to("products/getByReference")["reference"] == "ev26-bilhete-geral"
+    created = sent_to("products/insert")
+    assert created["reference"] == "ev26-bilhete-geral"
+    assert created["type"] == 1  # the product's own, not the event's default (2)
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_catalog_product_is_named_after_the_item_not_the_line(
+    moloni_event, order, item, position
+):
+    # An itemized line is "Regular ticket — Ana"; the catalog product it creates must
+    # not be, or Moloni prints "— Ana" under every later buyer's line (real FR M/11).
+    with scopes_disabled():
+        position.attendee_name_parts = {"_legacy": "Ana Silva"}
+        position.save()
+        order.meta_info = '{"contact_form_data": {"ptinvoicing_itemize": true}}'
+        order.save()
+    mock_categories({})
+    _issue_creating_product(order, moloni_event)
+
+    assert sent_to("products/insert")["name"] == "Ticket"
+    assert sent_to("invoiceReceipts/insert")["products"][0]["name"] == (
+        "Ticket — Ana Silva"
+    )
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_an_empty_prefix_is_respected(moloni_event, order, item, position):
+    with scopes_disabled():
+        moloni_event.settings.ptinvoicing_reference_prefix = ""
+    mock_categories({})
+    _issue_creating_product(order, moloni_event)
+    assert sent_to("products/insert")["reference"] == f"item-{item.pk}"
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_over_long_reference_is_refused_before_touching_the_catalog(
+    moloni_event, order, item, position
+):
+    from pretix_ptinvoicing.models import ItemSettings
+
+    # Set within the limit, then the limit was lowered (or the prefix lengthened).
+    with scopes_disabled():
+        ItemSettings.objects.create(item=item, reference="bilhete-geral-dia-1")
+        moloni_event.settings.moloni_reference_limit = 20
+    mock_grant()
+    mock_no_customer()
+    responses.add(
+        responses.POST, API.format("customers/insert"), json={"customer_id": 1}
+    )
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": moloni_event.pk})
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_ERROR
+    assert "pretix-bilhete-geral-dia-1" in invoice.error_message
+    assert "20" in invoice.error_message
+    assert not [c for c in responses.calls if "/products/" in c.request.url]
+    assert not [c for c in responses.calls if "/productCategories/" in c.request.url]
+
+
+@pytest.mark.django_db
+def test_reference_limit_never_exceeds_moloni_s_thirty(event):
+    provider = MoloniProvider(event)
+    assert provider.reference_limit == 30
+    event.settings.moloni_reference_limit = 20
+    assert provider.reference_limit == 20
+    event.settings.moloni_reference_limit = 45  # an old or hand-edited value
+    assert provider.reference_limit == 30
+
+
+@pytest.mark.django_db
+def test_settings_refuse_a_prefix_that_leaves_no_room(logged_in_client, moloni_event):
+    url = f"/control/event/{moloni_event.organizer.slug}/{moloni_event.slug}/invoicing/settings/"
+    data = {
+        "ptinvoicing_provider": "moloni",
+        "ptinvoicing_reference_prefix": "festival-de-verao-2026-",
+        "moloni-moloni_client_id": "cid",
+        "moloni-moloni_client_secret": "secret",
+        "moloni-moloni_username": "user",
+        "moloni-moloni_password": "pass",
+        "moloni-moloni_company_id": "7",
+        "moloni-moloni_document_set_id": "3",
+        "moloni-moloni_credit_note_document_set_id": "4",
+        "moloni-moloni_payment_method_id": "5",
+        "moloni-moloni_maturity_date_id": "9",
+        "moloni-moloni_product_type": "2",
+        "moloni-moloni_unit_id": "1",
+        "moloni-moloni_reference_limit": "30",
+    }
+    response = logged_in_client.post(url, data)
+    assert response.status_code == 200
+    assert "leaves fewer than" in response.content.decode()
+    with scopes_disabled():
+        moloni_event.settings.flush()
+        assert moloni_event.settings.get("ptinvoicing_reference_prefix") is None
+
+    # Nothing above 30, however the account is set.
+    data["ptinvoicing_reference_prefix"] = "pretix-"
+    data["moloni-moloni_reference_limit"] = "40"
+    assert logged_in_client.post(url, data).status_code == 200
+
+    data["moloni-moloni_reference_limit"] = "25"
+    assert logged_in_client.post(url, data).status_code == 302
+    with scopes_disabled():
+        moloni_event.settings.flush()
+        assert moloni_event.settings.get("moloni_reference_limit", as_type=int) == 25
+        assert moloni_event.settings.get("ptinvoicing_reference_prefix") == "pretix-"
 
 
 def _issue_with_customers(order, event, found, address=None):
@@ -1052,10 +1272,9 @@ def test_lookups_list_companies_exemptions_and_per_company_fields(oauth_event):
     assert with_company["moloni_maturity_date_id"] == [
         {"id": 9, "label": "Pronto pagamento"}
     ]
-    assert with_company["moloni_product_category_id"] == [
-        {"id": 20, "label": "Bilhetes"}
-    ]
-    assert sent_to("productCategories/getAll") == {"company_id": 2, "parent_id": 0}
+    # Categories aren't picked any more: products go under Pretix > <event>.
+    assert "moloni_product_category_id" not in with_company
+    assert not [c for c in responses.calls if "productCategories" in c.request.url]
     assert with_company["moloni_unit_id"] == [{"id": 1, "label": "Unidade"}]
     sent = [
         json.loads(c.request.body)
@@ -1094,7 +1313,6 @@ def test_password_fields_hidden_while_connected_and_kept_on_save(
             "moloni-moloni_credit_note_document_set_id": "4",
             "moloni-moloni_payment_method_id": "5",
             "moloni-moloni_maturity_date_id": "9",
-            "moloni-moloni_product_category_id": "20",
             "moloni-moloni_product_type": "2",
             "moloni-moloni_unit_id": "1",
         },

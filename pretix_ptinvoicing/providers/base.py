@@ -58,6 +58,10 @@ class InvoiceProvider:
     # lookups() fields whose value changes what lookups() returns (Moloni's company scopes
     # its document sets, taxes and payment methods) — picking one re-runs the lookup.
     lookup_triggers = ()
+    # The settings field holding this provider's catalog-reference limit (see
+    # reference_limit), if it has one: the settings page's note on the prefix follows it
+    # live.
+    reference_limit_field = None
 
     # True when the provider itself refuses a second document for the same identifier_id
     # (Fact.pt does, via document.identifierId). That is what makes it safe for tasks.py to
@@ -133,6 +137,23 @@ class InvoiceProvider:
 
         `data` is the settings form's posted values with the form prefix stripped — i.e.
         whatever the admin has currently typed, not necessarily what's saved. Optional.
+        """
+        return {}
+
+    @property
+    def reference_limit(self):
+        """
+        How long a catalog reference (the event's prefix + the product's reference) may
+        be at this provider, or None when it doesn't keep a catalog. The product page's
+        reference field is sized from it. Optional.
+        """
+        return None
+
+    def item_fields(self):
+        """
+        Extra fields for the product page's "Invoicing (PT)" form, as {name: Field},
+        namespaced by hand like settings keys (Moloni's "moloni_type"). Saved into
+        ItemSettings.data and handed to issue() on each Line as item_settings. Optional.
         """
         return {}
 
