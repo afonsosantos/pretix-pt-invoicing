@@ -98,6 +98,22 @@ def test_one_line_flattens_newlines():
 
 
 @pytest.mark.django_db
+def test_document_date_is_the_events_local_day(order, monkeypatch):
+    from datetime import UTC, datetime
+
+    from pretix_ptinvoicing import orderdata
+
+    # 00:30 in Lisbon summer time (UTC+1) is still the previous day in UTC.
+    monkeypatch.setattr(
+        orderdata.timezone,
+        "now",
+        lambda: datetime(2026, 7, 14, 23, 30, tzinfo=UTC),
+    )
+    order.event.settings.timezone = "Europe/Lisbon"
+    assert orderdata.document_date(order) == "2026-07-15"
+
+
+@pytest.mark.django_db
 def test_lines_carry_attendee_names_only_when_the_buyer_asked(order, position):
     from pretix_ptinvoicing.orderdata import invoice_lines
 

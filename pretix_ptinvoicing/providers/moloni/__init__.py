@@ -5,7 +5,6 @@ from decimal import Decimal
 
 import requests
 from django import forms
-from django.utils import timezone
 from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
@@ -14,6 +13,7 @@ from ...orderdata import (
     FINAL_CONSUMER_NIF,
     MIN_REFERENCE_ROOM,
     bare_tin,
+    document_date,
     invoice_lines,
     one_line,
     reference_prefix,
@@ -684,7 +684,7 @@ class MoloniProvider(InvoiceProvider):
     def issue(self, order, identifier_id):
         client = self._client()
         company_id = self.settings.get("moloni_company_id", as_type=int)
-        date = timezone.now().date().isoformat()
+        date = document_date(order)
 
         lines = invoice_lines(order)
         tax_rate = self._check_taxes(client, lines, company_id)
@@ -722,7 +722,7 @@ class MoloniProvider(InvoiceProvider):
     def credit(self, order, document_id, identifier_id):
         client = self._client()
         company_id = self.settings.get("moloni_company_id", as_type=int)
-        date = timezone.now().date().isoformat()
+        date = document_date(order)
 
         # Generic documents/getOne (not invoiceReceipts/getOne), and paired with
         # getUnrelatedProducts for the line items — matching how the official Moloni
