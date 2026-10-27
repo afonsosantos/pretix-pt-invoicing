@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,13 @@ DEFAULT_REFERENCE_PREFIX = "pretix-"
 MIN_REFERENCE_ROOM = 12
 # The shapes the fallback references take; a configured reference may not look like one.
 RESERVED_REFERENCE = re.compile(r"^(item-\d+|fee-.*)$")
+
+
+def document_date(order):
+    """Today in the event's timezone, as the document's date (YYYY-MM-DD)."""
+    # Not timezone.now().date(): with USE_TZ that's UTC, so in Lisbon summer time
+    # (UTC+1) an order paid between midnight and 1am got the previous day's date.
+    return timezone.now().astimezone(order.event.timezone).date().isoformat()
 
 
 @dataclass

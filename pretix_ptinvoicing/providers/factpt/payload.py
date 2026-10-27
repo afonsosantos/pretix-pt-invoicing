@@ -1,6 +1,10 @@
-from django.utils import timezone
-
-from ...orderdata import bare_tin, client_name, invoice_lines, one_line
+from ...orderdata import (
+    bare_tin,
+    client_name,
+    document_date,
+    invoice_lines,
+    one_line,
+)
 
 # Fact.pt's documented limits for the client block. Every one of these is a single line:
 # pretix's street is a TextField, so a buyer pressing Enter would otherwise send a newline
@@ -96,7 +100,7 @@ def build_payload(order, event_settings, identifier_id, client_id=None):
             ),
         ),
         "document": {
-            "date": timezone.now().date().isoformat(),
+            "date": document_date(order),
             "markPaid": True,
             "reference": order.code,
             "identifierId": identifier_id,
@@ -112,7 +116,7 @@ def build_credit_payload(order, identifier_id):
     # total do documento a creditar").
     return {
         "document": {
-            "date": timezone.now().date().isoformat(),
+            "date": document_date(order),
             "reference": order.code,
             "identifierId": identifier_id,
         }
