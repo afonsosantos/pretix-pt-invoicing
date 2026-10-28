@@ -1,4 +1,5 @@
 import logging
+from datetime import timedelta
 from decimal import Decimal
 
 from django import forms
@@ -160,6 +161,46 @@ class FactptProvider(InvoiceProvider):
                         "label": _describe_tax(rate),
                     }
                 )
+
+    # Fact.pt refuses a second document with the same identifierId, so a retry can't
+    # duplicate — but the refusal leaves the row without the document a timed-out call
+    # created. GET /documents has no identifierId filter (its filters: paymentStatus,
+    # startDate, endDate, afterId, sortBy, sort), yet every listed document carries its
+    # `identifierId`, so find_document lists the documents since the first attempt,
+    # newest first, and picks ours out.
+    recovers_documents = True
+    # Pages of 50-ish documents to look through before giving up: a busy account
+    # issuing more than that since the attempt is not something a retry should wade
+    # through indefinitely.
+    MAX_LOOKUP_PAGES = 20
+
+    def find_document(self, identifier_id, kind, since):
+        client = self._client()
+        # A day of slack: the list filters on the document's date, the row's `created`
+        # is a UTC instant, and the two needn't agree about midnight.
+        filters = {
+            "startDate": (since - timedelta(days=1)).date().isoformat(),
+            "sortBy": "id",
+            "sort": "DESC",
+        }
+        for page in range(1, self.MAX_LOOKUP_PAGES + 1):
+            response = client.list_documents(page=page, **filters)
+            for document in response.get("data") or []:
+                if document.get("identifierId") == identifier_id and document.get("id"):
+                    return IssuedDocument(
+                        document_id=str(document["id"]),
+                        link=None,
+                        permanent_url=document.get("permanentUrl"),
+                        number=document.get("number"),
+                    )
+            if page >= int(response.get("totalPages") or 1):
+                return None
+        logger.warning(
+            "factpt: gave up looking for %s after %s pages",
+            identifier_id,
+            self.MAX_LOOKUP_PAGES,
+        )
+        return None
 
     def issue(self, order, identifier_id):
         client = self._client()

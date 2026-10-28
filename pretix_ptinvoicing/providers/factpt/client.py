@@ -1,4 +1,4 @@
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import requests
 from django.utils.translation import gettext_lazy as _
@@ -91,6 +91,14 @@ class FactptClient:
 
     def list_taxes(self):
         return self._request("GET", "/taxes").get("data") or []
+
+    def list_documents(self, page=1, **filters):
+        """
+        One page of GET /documents, the whole AppResponse (`data`, `totalPages`…).
+        `filters` are the documented query parameters (startDate, sortBy, sort…).
+        """
+        query = urlencode({**filters, "page": page})
+        return self._request("GET", f"/documents?{query}")
 
     def search_clients(self, query):
         return (

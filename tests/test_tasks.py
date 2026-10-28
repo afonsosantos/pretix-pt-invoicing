@@ -1,4 +1,5 @@
 import json
+from datetime import UTC
 from decimal import Decimal
 from typing import ClassVar
 from urllib.parse import quote
@@ -709,11 +710,18 @@ class _DummyProvider(InvoiceProvider):
 
     issued: ClassVar = []
     credited: ClassVar = []
+    looked_up: ClassVar = []
     fail_with = None
+    # What find_document returns once recovers_documents is switched on.
+    existing = None
 
     @property
     def is_configured(self):
         return bool(self.settings.get("dummy_key"))
+
+    def find_document(self, identifier_id, kind, since):
+        self.looked_up.append((identifier_id, kind))
+        return self.existing
 
     def issue(self, order, identifier_id):
         if self.fail_with:
@@ -741,7 +749,9 @@ class _DummyProvider(InvoiceProvider):
 def dummy_provider(monkeypatch):
     _DummyProvider.issued = []
     _DummyProvider.credited = []
+    _DummyProvider.looked_up = []
     _DummyProvider.fail_with = None
+    _DummyProvider.existing = None
     monkeypatch.setitem(PROVIDERS, "dummy", _DummyProvider)
     return _DummyProvider
 
@@ -1189,3 +1199,137 @@ def test_free_order_is_not_invoiced(order, event, position):
 
     with scopes_disabled():
         assert IssuedInvoice.objects.count() == 0
+
+
+def _paid_dummy_order(order, event):
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "dummy"
+        event.settings.dummy_key = "x"
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["status"])
+
+
+@pytest.mark.django_db
+def test_a_provider_without_dedupe_is_asked_for_the_document_before_every_attempt(
+    order, event, dummy_provider, monkeypatch
+):
+    # Moloni's case: nothing on its side refuses a second insert, so the only guard is
+    # to look first. Found → adopted, and issue() is never called.
+    _paid_dummy_order(order, event)
+    monkeypatch.setattr(dummy_provider, "deduplicates_issuance", False)
+    monkeypatch.setattr(dummy_provider, "recovers_documents", True)
+    dummy_provider.existing = IssuedDocument(
+        document_id="DUMMY-OLD", link=None, permanent_url=None, number="FR M/1"
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.looked_up == [("pretix-dummy-FOOBAR", "invoice")]
+    assert dummy_provider.issued == []
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_SUCCESS
+    assert invoice.document_id == "DUMMY-OLD"
+    assert invoice.document_number == "FR M/1"
+
+
+@pytest.mark.django_db
+def test_a_deduplicating_provider_is_only_asked_on_a_retry(
+    order, event, dummy_provider, monkeypatch
+):
+    # Fact.pt's case: the first attempt can't duplicate (identifierId), so no lookup.
+    # After a failed attempt the document may exist without the row knowing — the
+    # retry finds it and links it back instead of bouncing off the duplicate check.
+    _paid_dummy_order(order, event)
+    monkeypatch.setattr(dummy_provider, "recovers_documents", True)
+    dummy_provider.existing = IssuedDocument(
+        document_id="DUMMY-OLD", link=None, permanent_url=None
+    )
+    dummy_provider.fail_with = OSError("timed out")
+    monkeypatch.setattr(issue_invoice, "retry", lambda **kw: Exception("retry"))
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+    assert dummy_provider.looked_up == []
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+        assert invoice.status == IssuedInvoice.STATUS_ERROR
+        assert invoice.attempts == 1
+
+    dummy_provider.fail_with = None
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert dummy_provider.looked_up == [("pretix-dummy-FOOBAR", "invoice")]
+    assert dummy_provider.issued == []
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_SUCCESS
+    assert invoice.document_id == "DUMMY-OLD"
+
+
+@pytest.mark.django_db
+def test_auto_retry_when_the_provider_recovers_documents_instead(
+    order, event, dummy_provider, monkeypatch
+):
+    # No idempotency field, but the retry can find what the timed-out call created, so
+    # it is safe — the counterpart of test_no_auto_retry_when_the_provider_cannot_deduplicate.
+    _paid_dummy_order(order, event)
+    monkeypatch.setattr(dummy_provider, "deduplicates_issuance", False)
+    monkeypatch.setattr(dummy_provider, "recovers_documents", True)
+    dummy_provider.fail_with = OSError("connection reset")
+    retries = []
+    monkeypatch.setattr(
+        issue_invoice, "retry", lambda **kw: retries.append(kw) or Exception("retry")
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    assert len(retries) == 1
+    with scopes_disabled():
+        message = IssuedInvoice.objects.get(order=order).error_message
+    assert "retrying automatically" in message
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_factpt_finds_a_document_by_identifier_id_across_pages(event):
+    # GET /documents has no identifierId filter, so the pages since the attempt are
+    # read, newest first, until ours turns up (or they run out).
+    from datetime import datetime
+
+    from pretix_ptinvoicing.providers.factpt import FactptProvider
+
+    with scopes_disabled():
+        event.settings.factpt_token = "test-token"
+    pages = {
+        1: {"data": [{"id": 90, "identifierId": "pretix-x-OTHER"}], "totalPages": 2},
+        2: {
+            "data": [
+                {
+                    "id": 89,
+                    "identifierId": "pretix-x-ABCDE",
+                    "number": "2026/9",
+                    "permanentUrl": "https://www.fact.pt/014/89",
+                }
+            ],
+            "totalPages": 2,
+        },
+    }
+
+    def listing(request):
+        query = dict(p.split("=") for p in request.url.split("?")[1].split("&"))
+        assert query["startDate"] == "2026-10-27" and query["sort"] == "DESC"
+        body = {"AppStatusCode": 200, "AppResponse": pages[int(query["page"])]}
+        return 200, {}, json.dumps(body)
+
+    responses.add_callback(responses.GET, "https://api.fact.pt/documents", listing)
+
+    since = datetime(2026, 10, 28, 0, 30, tzinfo=UTC)
+    found = FactptProvider(event).find_document("pretix-x-ABCDE", "invoice", since)
+    assert (found.document_id, found.number, found.permanent_url) == (
+        "89",
+        "2026/9",
+        "https://www.fact.pt/014/89",
+    )
+    assert (
+        FactptProvider(event).find_document("pretix-x-NONE", "invoice", since) is None
+    )

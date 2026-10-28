@@ -212,6 +212,11 @@ class MoloniProvider(InvoiceProvider):
     # are free text it doesn't dedupe on. A retry after a timeout could therefore issue a
     # second official invoice, so the core must not retry on its own.
     deduplicates_issuance = False
+    # What makes up for that: the document is sent with our_reference = identifier_id,
+    # and invoiceReceipts/getAll (creditNotes/getAll) filters on our_reference exactly
+    # (verified on a real account: "pretix-test-LHLQ9" found FR M/16, a prefix of it
+    # found nothing), so find_document can tell whether it already exists.
+    recovers_documents = True
 
     settings_template = "pretix_ptinvoicing/control/moloni_connection.html"
     logo = "pretix_ptinvoicing/logos/moloni.svg"
@@ -767,6 +772,48 @@ class MoloniProvider(InvoiceProvider):
             link=None,
             permanent_url=None,
             number=self.document_number(credit_id),
+        )
+
+    def find_document(self, identifier_id, kind, since):
+        """
+        The closed invoice-receipt (or credit note) carrying our_reference =
+        identifier_id, or None. Asked by the core before every attempt, since
+        invoiceReceipts/insert has nothing it dedupes on: this is what keeps a
+        timed-out insert, a stale claim or a manual retry from issuing twice.
+        """
+        endpoint = (
+            "creditNotes/getAll" if kind == "credit_note" else "invoiceReceipts/getAll"
+        )
+        company_id = self.settings.get("moloni_company_id", as_type=int)
+        rows = self._client().call(
+            endpoint, {"company_id": company_id, "our_reference": identifier_id}
+        )
+        found = sorted(
+            (
+                row
+                for row in (rows if isinstance(rows, list) else [])
+                if isinstance(row, dict)
+                and row.get("our_reference") == identifier_id
+                # 1 = closed/issued; a draft (0) is not a document anyone received.
+                and row.get("status") == 1
+                and row.get("document_id")
+            ),
+            key=lambda row: row["document_id"],
+        )
+        if not found:
+            return None
+        if len(found) > 1:
+            logger.warning(
+                "moloni: %s documents share our_reference %s; adopting the first",
+                len(found),
+                identifier_id,
+            )
+        document_id = found[0]["document_id"]
+        return IssuedDocument(
+            document_id=str(document_id),
+            link=None,
+            permanent_url=None,
+            number=self.document_number(document_id),
         )
 
     def document_number(self, document_id):
