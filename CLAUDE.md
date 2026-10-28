@@ -47,7 +47,44 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   consumer). `invoice_lines(order)` is what both providers invoice: every position **and every
   fee** (payment/service/shipping… — leaving fees out issued invoices below the order total), as
   `Line`s — **identical tickets share one line with `qty`** (same name/item/price/rate), one
-  per position only when the buyer ticked "itemize by attendee". `Line.net` is the net unit
+  per position only when the buyer ticked "itemize by attendee".
+  **Free orders and 0.00 lines.** `is_free(order)` (`order.total <= 0`) makes `issue_invoice`
+  return with no row, `IssueView` refuse, and the order panel say "nothing to invoice": pretix
+  marks a 0.00 order paid through its own `free` payment provider (at checkout, on approval,
+  and when an order change makes a paid order free — `OrderChangeManager._check_paid_to_free`)
+  and sends `order_paid` for it, so without the guard every free order got an invoice-receipt
+  for 0.00. `invoice_lines` also drops any position or fee at 0.00 **with nothing taken
+  off** from a paid order (a bundled add-on, a 0.00 product): Fact.pt's docs require
+  `price` to be "Número positivo", Moloni's state no minimum, and the only way both issue
+  the same document is not to send them. pretix's own `invoice_include_free` setting is
+  deliberately not honoured. No row for a free order also means a later change that makes
+  it cost something is invoiced normally (a 0.00 invoice would have closed the cycle).
+  Fact.pt's `price` is formatted with `format(net, "f")`: `str()` of a zero `Decimal` at
+  8 places is `"0E-8"`.
+  **Vouchers and discounts show as line discounts.** `position.price` is pretix's final
+  price, so the totals were always right; what changed is the line: `listed_price(p)`
+  recovers the price the buyer saw — exact for a voucher (`voucher_budget_use` = listed −
+  after voucher, stored whatever the voucher's mode) and by dividing back for an automatic
+  `Discount`, which only stores its `benefit_discount_matching_percent` of the
+  price-after-voucher (can be a cent off on rare prices; harmless, the totals come from
+  `price`). `Line.listed_gross` carries it, the name says what took it off ("Regular
+  ticket (voucher TWENTY)", a discount's `internal_name`), and `set_nets` → `_set_discount`
+  turns the difference into the provider's **percentage** `discount` plus `price_net`,
+  the unit net sent *before* that discount. Both APIs only know percentages: Fact.pt 2
+  decimals (documented), Moloni **7** (a draft sent 42.857142857 and read back
+  42.8571429, applying it to the 5-decimal stored price: 28.45528 → incidence 16.26016 —
+  `InvoiceProvider.discount_places`, passed as `invoice_lines(order, discount_places=)`).
+  A fixed-amount voucher (35.00 → 20.00 is 42.857142…%) therefore can't be exact at 2
+  decimals, so `price_net = net / (1 − discount)` rather than the listed net: the unit
+  price prints a fraction of a cent off (Fact.pt 35.00175 for that one; Moloni's 7 decimals
+  make it 34,99999, the same as undiscounted) and the totals are exactly what was paid. A
+  ticket made free by a 100% voucher is **kept**, as the listed net with `discount` 100 —
+  it contributes nothing and shows on the document. `tests/test_factpt_payload.py`
+  simulates both precisions over random discounted documents. A discounted and a
+  full-price copy of the same item are two lines (price and listed price are in the key).
+  Fact.pt's items only get `discount` when there is one, so undiscounted payloads are
+  unchanged; Moloni's always carried `discount`, previously 0.
+  `Line.net` is the net unit
   price **to 8 decimals, set by `set_nets()` per VAT rate across the whole document** (on line
   totals, net × qty), not `price - tax_value`: pretix rounds `tax_value` to cents, the
   provider adds its VAT back on top, and no 2-decimal net gets 15.00 at 23% back (12.19 → 14.99,

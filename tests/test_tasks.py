@@ -1167,3 +1167,25 @@ def test_a_storage_failure_while_mailing_is_swallowed(
         invoice = IssuedInvoice.objects.get(order=order)
     assert invoice.status == IssuedInvoice.STATUS_SUCCESS
     assert invoice.email_sent is False
+
+
+@pytest.mark.django_db
+def test_free_order_is_not_invoiced(order, event, position):
+    # pretix marks a 0.00 order (free tickets, a 100% voucher) paid through its "free"
+    # provider and sends order_paid for it, so the task sees it like any payment.
+    # Nothing was paid, so there is no document and no row either.
+    with scopes_disabled():
+        event.settings.ptinvoicing_provider = "factpt"
+        event.settings.factpt_token = "test-token"
+        event.settings.factpt_default_tax_id = 5
+        position.price = Decimal("0.00")
+        position.save(update_fields=["price"])
+        order.total = Decimal("0.00")
+        order.status = Order.STATUS_PAID
+        order.save(update_fields=["total", "status"])
+
+    # No responses mock registered: any HTTP call would raise.
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": event.pk})
+
+    with scopes_disabled():
+        assert IssuedInvoice.objects.count() == 0

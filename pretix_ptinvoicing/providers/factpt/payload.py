@@ -8,6 +8,8 @@ from ...orderdata import bare_tin, client_name, invoice_lines, one_line
 MAX_NAME = 100
 MAX_ADDRESS = 100
 MAX_CITY = 50
+# items[].discount: "Um número entre 0.00 e 100.00 (2 casas decimais)".
+DISCOUNT_PLACES = 2
 
 
 def build_client_block(order, client_id=None, custom_field_is_nif=False):
@@ -74,15 +76,22 @@ def build_items_block(order, event_settings):
             # one rejects it, and its allowRound left invoices cents off in the sandbox.
             # ponytail: the 8-decimal net is unverified against Fact.pt; confirm with
             # one document at 15.00/23% that it comes back as gross 15.00.
-            "price": str(line.net),
+            # Plain notation: str() of a zero Decimal is "0E-8" (lines at 0 are
+            # dropped by invoice_lines, but a price string must never be exponent form).
+            "price": format(line.price_net, "f"),
             "reference": line.reference[:20],
             "retention": False,
             "type": default_type,
             "unitId": default_unit_id,
             "taxId": default_tax_id,
             "quantity": line.qty,
+            # A voucher or automatic discount, as the percentage Fact.pt takes ("entre
+            # 0.00 e 100.00, 2 casas decimais"); set_nets derived `price` so that
+            # price × (1 − discount) is the net actually paid. Omitted when there is
+            # none — it's optional, and the payload stays what it always was.
+            **({"discount": format(line.discount, "f")} if line.discount else {}),
         }
-        for line in invoice_lines(order)
+        for line in invoice_lines(order, discount_places=DISCOUNT_PLACES)
     ]
 
 

@@ -37,9 +37,13 @@
             <p class="text-muted">
                 {% trans "Invoices are only issued once the order is paid." %}
             </p>
+        {% elif not cycles and is_free %}
+            <p class="text-muted">
+                {% trans "This order is free: there is nothing to invoice." %}
+            </p>
         {% endif %}
 
-        {% if cycles or is_paid and configured %}
+        {% if cycles or needs_invoice and configured %}
             {% comment %}
                 Same shape as pretix's own "Payments" panel on this page: a
                 table-condensed with one row per document and its own inline actions,

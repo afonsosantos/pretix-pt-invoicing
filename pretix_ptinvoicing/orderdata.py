@@ -52,6 +52,15 @@ class Line:
     # itemized line carries the attendee ("Regular ticket — Ana"), and Moloni printed
     # the first buyer's name under every later sale of a product created from one.
     catalog_name: str = ""
+    # Unit gross before the voucher / automatic discount pretix applied (what the buyer
+    # saw), None when nothing was taken off — invoice_lines sets it, set_nets turns the
+    # difference into `discount`.
+    listed_gross: Decimal = None
+    # What the provider is sent: the unit net *before* its line discount, and that
+    # discount as a percentage (both APIs only know percentages). From set_nets(), which
+    # keeps price_net × (1 − discount) at `net` whatever precision the percentage has.
+    price_net: Decimal = None
+    discount: Decimal = Decimal(0)
 
     @property
     def exact_net(self):
@@ -67,9 +76,14 @@ NET_PLACES = Decimal("0.00000001")
 SLACK = Decimal("0.0049")
 
 
-def set_nets(lines):
+def set_nets(lines, discount_places=2):
     """
     Each line's net unit price: 8 decimals, chosen per VAT rate across the document.
+
+    `net` is the unit net of what was *paid* (after any voucher or discount); it is what
+    the document's totals are built from. A line with a `listed_gross` above its gross
+    is then sent as `price_net` with a `discount` percentage — see _set_discount, and
+    `discount_places` for how precise the provider lets that percentage be.
 
     Providers add their VAT on top of the net, so pretix's gross prices have to come
     back out of it. Not gross - tax_value: pretix rounds tax_value to cents, and a
@@ -124,13 +138,107 @@ def set_nets(lines):
                 nets[i] = moved
         for line, net in zip(group, nets):
             line.net = (net / line.qty).quantize(NET_PLACES)
+            _set_discount(line, discount_places)
     return lines
 
 
-def invoice_lines(order):
+def _set_discount(line, places):
+    """
+    The line as the provider prints it: listed unit net, less a percentage.
+
+    Both APIs take a per-line discount only as a percentage (Fact.pt to 2 decimals,
+    Moloni stores 7 — a draft sent 42.857142857 and got 42.8571429 back), applied by
+    the provider to `price_net`. The percentage is the real one rounded to what the
+    provider keeps; a fixed-amount voucher (35.00 → 20.00 is 42.857142…%) therefore
+    can't be exact at 2 decimals, so `price_net` is derived back from `net` instead of
+    being the listed price: net / (1 − discount), which Moloni's incidence confirmed
+    (28.45528 at 42.8571429% → 16.26016) — the printed unit price is then a fraction
+    of a cent off the listed one, and the totals are exactly what was paid. At 100%
+    (a free ticket under a voucher) the listed net is sent as is: it contributes
+    nothing, and prints the ticket's price with the discount that cancelled it.
+    """
+    listed = line.listed_gross
+    if not listed or listed <= line.gross:
+        line.discount = Decimal(0)
+        line.price_net = line.net
+        return
+    listed_net = (listed * 100 / (100 + line.tax_rate)).quantize(NET_PLACES)
+    if not line.gross:
+        line.discount = Decimal(100)
+        line.price_net = listed_net
+        return
+    step = Decimal(1).scaleb(-places)
+    discount = ((listed - line.gross) / listed * 100).quantize(
+        step, rounding="ROUND_HALF_UP"
+    )
+    # Paid something, so never a full discount, however close it rounds.
+    line.discount = min(discount, 100 - step)
+    line.price_net = (line.net * 100 / (100 - line.discount)).quantize(NET_PLACES)
+
+
+def listed_price(position):
+    """
+    The unit price before pretix's voucher and automatic discount: what the buyer saw.
+
+    pretix keeps the final price on the position; for a voucher it also keeps what the
+    voucher took off (`voucher_budget_use` = listed − after voucher, whatever the
+    voucher's mode), so the listed price is exact. An automatic Discount is a
+    percentage (`benefit_discount_matching_percent`) of the price *after* the voucher,
+    rounded to cents, and only the percentage is stored: dividing back can be a cent
+    off the price the buyer saw on rare prices. Harmless — `price` is what the
+    document's totals come from, this only shapes the discount shown.
+    """
+    price = position.price
+    if position.discount_id:
+        pct = position.discount.benefit_discount_matching_percent
+        if 0 < pct < 100:
+            price = (price * 100 / (100 - pct)).quantize(CENT, rounding="ROUND_HALF_UP")
+    if position.voucher_id and position.voucher_budget_use:
+        price += position.voucher_budget_use
+    return price
+
+
+def _discount_label(position):
+    """What took the price down, for the line's name: "voucher ABC", a discount's name."""
+    parts = []
+    if position.voucher_id and position.voucher_budget_use:
+        parts.append(f"voucher {position.voucher.code}")
+    if position.discount_id:
+        parts.append(str(position.discount.internal_name))
+    return ", ".join(parts)
+
+
+def is_free(order):
+    """
+    Nothing was paid for this order, so there is nothing to invoice.
+
+    pretix marks a 0.00 order paid through its own "free" payment provider — at
+    checkout, or when a change makes a paid order free — and sends order_paid for it
+    like for any other payment. An invoice-receipt states that money was received,
+    and a document for 0.00 can't be issued at all by Fact.pt (every item's price must
+    be positive). Vouchers and discounts are already in `order.total`, so a 100%
+    voucher is a free order and a partial one isn't.
+    """
+    return order.total <= Decimal("0.00")
+
+
+def invoice_lines(order, discount_places=2):
     """
     Everything the buyer paid for: positions *and* fees (payment, service, shipping…).
     Leaving fees out would issue an invoice below the order total.
+
+    A voucher or automatic discount shows as one: the line carries the listed price
+    (`listed_gross`, see listed_price) and set_nets turns the difference into the
+    provider's percentage discount, with what took it off in the line's name
+    ("Regular ticket (voucher TWENTY)"). The totals are still pretix's final prices,
+    i.e. what the buyer paid. `discount_places` is how many decimals the provider
+    keeps of the percentage.
+
+    Lines at 0.00 with nothing taken off are left out, positions and fees alike: a
+    bundled add-on or a 0.00 product states nothing about the money received, Fact.pt
+    rejects a price that isn't positive, and dropping them gives both providers the
+    same document. A ticket made free by a 100% voucher stays — listed price, 100%
+    off — so the invoice shows it.
     """
     # The buyer ticked "itemize by attendee" at checkout (signals.contact_form_fields).
     itemize = (
@@ -142,14 +250,20 @@ def invoice_lines(order):
     # the buyer asked for it. Also what keeps unit prices clean (set_nets).
     lines = {}
     for p in order.positions.select_related(
-        "item", "item__ptinvoicing_settings"
+        "item", "item__ptinvoicing_settings", "voucher", "discount"
     ).order_by("positionid"):
+        listed = listed_price(p)
+        discounted = listed > p.price
+        if not p.price and not discounted:
+            continue
         name = (
             f"{p.item.name} — {p.attendee_name}"
             if itemize and p.attendee_name
             else str(p.item.name)
         )
-        key = (p.pk,) if itemize else (name, p.item_id, p.price, p.tax_rate)
+        if discounted:
+            name = f"{name} ({_discount_label(p)})"
+        key = (p.pk,) if itemize else (name, p.item_id, p.price, listed, p.tax_rate)
         if key in lines:
             lines[key].qty += 1
             continue
@@ -162,6 +276,7 @@ def invoice_lines(order):
             reference=f"pretix-{p.pk}",
             item_settings=dict(settings.data) if settings else {},
             catalog_name=str(p.item.name),
+            listed_gross=listed if discounted else None,
         )
     lines = list(lines.values())
     lines += [
@@ -178,7 +293,7 @@ def invoice_lines(order):
         for f in order.fees.all()
         if f.value
     ]
-    return set_nets(lines)
+    return set_nets(lines, discount_places)
 
 
 def item_settings(item):

@@ -9,7 +9,7 @@ from pretix.celery_app import app
 
 from .mail import send_credit_note_email, send_invoice_email
 from .models import IssuedInvoice
-from .orderdata import billing_data
+from .orderdata import billing_data, is_free
 from .providers import ProviderError, get_provider
 
 logger = logging.getLogger(__name__)
@@ -163,6 +163,17 @@ def issue_invoice(self, order_pk, event_pk=None):
                 "ptinvoicing: order %s is not paid (status %s), skipping",
                 order.code,
                 order.status,
+            )
+            return
+
+        if is_free(order):
+            # pretix sends order_paid for a 0.00 order too (its "free" provider), and
+            # the admin's button can target one. No row: nothing was paid, so there is
+            # no document to issue and nothing for the panel to call missing.
+            logger.info(
+                "ptinvoicing: order %s is free (total %s), nothing to invoice",
+                order.code,
+                order.total,
             )
             return
 

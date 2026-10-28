@@ -62,6 +62,9 @@ class InvoiceProvider:
     # reference_limit), if it has one: the settings page's note on the prefix follows it
     # live.
     reference_limit_field = None
+    # Decimals the provider keeps of a line's percentage discount (orderdata.set_nets
+    # rounds the real one to it and compensates in the net). Fact.pt documents 2.
+    discount_places = 2
 
     # True when the provider itself refuses a second document for the same identifier_id
     # (Fact.pt does, via document.identifierId). That is what makes it safe for tasks.py to

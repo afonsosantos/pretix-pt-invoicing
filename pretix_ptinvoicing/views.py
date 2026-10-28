@@ -15,6 +15,7 @@ from pretix.presale.views.order import OrderDetailMixin
 
 from .forms import EmailSettingsForm, ProviderSelectForm
 from .models import IssuedInvoice
+from .orderdata import is_free
 from .providers import PROVIDERS, ProviderError, ProviderUnreachable, get_provider
 from .tasks import issue_credit_note, issue_invoice
 
@@ -137,6 +138,8 @@ class IssueView(EventPermissionRequiredMixin, PluginEnabledMixin, View):
     def precondition(self, order, provider):
         if order.status != Order.STATUS_PAID:
             return _("Only paid orders can be invoiced.")
+        if is_free(order):
+            return _("This order is free: there is nothing to invoice.")
         if IssuedInvoice.current_cycle(order, provider.identifier)[1]:
             return _("This order already has an invoice.")
         return None

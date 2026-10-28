@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-20 20:26+0100\n"
+"POT-Creation-Date: 2026-10-28 18:38+0000\n"
 "PO-Revision-Date: 2026-10-01 23:00+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -771,6 +771,9 @@ msgstr ""
 
 msgid "Invoices are only issued once the order is paid."
 msgstr "As faturas só são emitidas depois de a encomenda estar paga."
+
+msgid "This order is free: there is nothing to invoice."
+msgstr "Esta encomenda é gratuita: não há nada a faturar."
 
 msgid "Last attempt"
 msgstr "Última tentativa"

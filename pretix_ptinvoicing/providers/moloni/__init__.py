@@ -217,6 +217,9 @@ class MoloniProvider(InvoiceProvider):
     logo = "pretix_ptinvoicing/logos/moloni.svg"
     lookup_triggers = ("moloni_company_id",)
     reference_limit_field = "moloni_reference_limit"
+    # A draft sent discount 42.857142857 and read back 42.8571429 (7 decimals), with
+    # the incidence computed from it on the 5-decimal stored price.
+    discount_places = 7
 
     @property
     def is_configured(self):
@@ -686,7 +689,7 @@ class MoloniProvider(InvoiceProvider):
         company_id = self.settings.get("moloni_company_id", as_type=int)
         date = timezone.now().date().isoformat()
 
-        lines = invoice_lines(order)
+        lines = invoice_lines(order, discount_places=self.discount_places)
         tax_rate = self._check_taxes(client, lines, company_id)
         customer_id, alternate_address_id = self._resolve_customer_id(
             client, order, company_id
