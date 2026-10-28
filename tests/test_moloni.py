@@ -36,6 +36,14 @@ def mock_grant(access="tok-1", refresh="ref-1", expires_in=3600):
         },
         status=200,
     )
+    mock_no_existing_document()
+
+
+def mock_no_existing_document():
+    # Every Moloni attempt first asks whether the document already exists
+    # (find_document, by our_reference): nothing there, go ahead and issue.
+    for endpoint in ("invoiceReceipts/getAll", "creditNotes/getAll"):
+        responses.add(responses.POST, API.format(endpoint), json=[], status=200)
 
 
 def mock_existing_product(product_id=12):
@@ -1510,3 +1518,95 @@ def test_payment_marked_paid_by_hand_counts_as_the_buyers_method(moloni_event, o
         assert build_payments(order, moloni_event.settings, "2026-10-08") == [
             {"payment_method_id": 7, "date": "2026-10-08", "value": 163.0}
         ]
+
+
+@pytest.mark.django_db
+@responses.activate
+def test_an_existing_document_is_adopted_instead_of_issued_again(
+    moloni_event, order, position
+):
+    # invoiceReceipts/insert has no idempotency field, so before every attempt the
+    # document is looked up by our_reference (exact match on a real account). A
+    # timed-out insert, a stale claim or a manual retry then adopts what exists: no
+    # customer, no product, no insert — and never two official invoices.
+    responses.add(
+        responses.GET,
+        GRANT,
+        json={"access_token": "tok", "refresh_token": "ref", "expires_in": 3600},
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        API.format("invoiceReceipts/getAll"),
+        json=[
+            # A draft with our reference doesn't count; the closed one does.
+            {"document_id": 880, "our_reference": "pretix-dummy-FOOBAR", "status": 0},
+            {"document_id": 881, "our_reference": "pretix-dummy-FOOBAR", "status": 1},
+            {"document_id": 882, "our_reference": "pretix-dummy-OTHER", "status": 1},
+        ],
+        status=200,
+    )
+    responses.add(
+        responses.POST,
+        API.format("documents/getOne"),
+        json={
+            "number": 16,
+            "document_set_name": "M",
+            "document_type": {"saft_code": "FR"},
+        },
+        status=200,
+    )
+
+    issue_invoice.apply(kwargs={"order_pk": order.pk, "event_pk": moloni_event.pk})
+
+    with scopes_disabled():
+        invoice = IssuedInvoice.objects.get(order=order)
+    assert invoice.status == IssuedInvoice.STATUS_SUCCESS
+    assert invoice.document_id == "881"
+    assert invoice.document_number == "FR M/16"
+    assert sent_to("invoiceReceipts/getAll") == {
+        "company_id": 7,
+        "our_reference": "pretix-dummy-FOOBAR",
+    }
+    assert not [c for c in responses.calls if "insert" in c.request.url]
+
+
+@pytest.mark.django_db
+def test_document_lines_carry_the_discount_moloni_applies(moloni_event):
+    # A draft on the real account: price 28.45528 at discount 42.8571429 (7 decimals
+    # kept) gave incidence 16.26016 — the net of a 35.00 ticket sold for 20.00. The
+    # listed price is what's sent, the voucher the percentage; a 100% voucher sends the
+    # listed price 100% off.
+    from pretix_ptinvoicing.orderdata import Line, set_nets
+    from pretix_ptinvoicing.providers.moloni.payload import build_products
+
+    lines = set_nets(
+        [
+            Line(
+                "Regular (voucher TWENTY)",
+                Decimal("20.00"),
+                Decimal(23),
+                "item-1",
+                "r1",
+                listed_gross=Decimal("35.00"),
+            ),
+            Line(
+                "Reduced (voucher FREE)",
+                Decimal("0.00"),
+                Decimal(23),
+                "item-2",
+                "r2",
+                listed_gross=Decimal("29.00"),
+            ),
+            Line("Regular", Decimal("35.00"), Decimal(23), "item-1", "r3"),
+        ],
+        discount_places=MoloniProvider.discount_places,
+    )
+    products = build_products(
+        lines, moloni_event.settings, {"item-1": 1, "item-2": 2}, Decimal(23)
+    )
+    assert [(p["price"], p["discount"]) for p in products] == [
+        (28.45528457, 42.8571429),
+        (23.57723577, 100.0),
+        (28.45528455, 0.0),
+    ]

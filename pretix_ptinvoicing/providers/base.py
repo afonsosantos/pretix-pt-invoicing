@@ -62,6 +62,9 @@ class InvoiceProvider:
     # reference_limit), if it has one: the settings page's note on the prefix follows it
     # live.
     reference_limit_field = None
+    # Decimals the provider keeps of a line's percentage discount (orderdata.set_nets
+    # rounds the real one to it and compensates in the net). Fact.pt documents 2.
+    discount_places = 2
 
     # True when the provider itself refuses a second document for the same identifier_id
     # (Fact.pt does, via document.identifierId). That is what makes it safe for tasks.py to
@@ -74,6 +77,15 @@ class InvoiceProvider:
     # timeout there is genuinely ambiguous: the document may or may not exist, and issuing a
     # second official invoice is worse than waiting for someone to look.
     deduplicates_issuance = True
+
+    # True when find_document() is implemented: the provider can be asked whether a
+    # document with a given identifier_id already exists. tasks.py then looks before
+    # every attempt that could duplicate one — any attempt for a provider without
+    # deduplicates_issuance, and every re-attempt for one with it — and adopts what it
+    # finds instead of issuing again. That is what makes an automatic retry after a
+    # timeout safe even without an idempotency field: the document the timed-out call
+    # created is found, not re-created.
+    recovers_documents = False
 
     def __init__(self, event):
         self.event = event
@@ -117,6 +129,18 @@ class InvoiceProvider:
         anything transient propagate as-is.
         """
         raise NotImplementedError
+
+    def find_document(self, identifier_id, kind, since):
+        """
+        The document already issued under `identifier_id`, as an IssuedDocument, or
+        None. `kind` is "invoice" or "credit_note" (IssuedInvoice.kind); `since` is
+        when the first attempt was made (a datetime), for providers that can only
+        list documents by date. Only a *closed*, issued document counts — never a
+        draft. Raise ProviderError for a rejection; let anything transient propagate,
+        the caller treats a failed lookup like a failed issuance. Optional: see
+        recovers_documents.
+        """
+        return
 
     def document_number(self, document_id):
         """

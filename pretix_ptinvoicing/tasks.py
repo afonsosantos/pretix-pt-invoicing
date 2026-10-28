@@ -9,7 +9,7 @@ from pretix.celery_app import app
 
 from .mail import send_credit_note_email, send_invoice_email
 from .models import IssuedInvoice
-from .orderdata import billing_data
+from .orderdata import billing_data, is_free
 from .providers import ProviderError, get_provider
 
 logger = logging.getLogger(__name__)
@@ -48,8 +48,9 @@ def _attempt(task, row, provider, order, call):
 
     A ProviderError is terminal (retrying a rejection without a fix won't help — the
     Control panel's Retry is the way back in). Anything else is transient, and only
-    retried when the provider dedupes on identifier_id: otherwise a call that timed out
-    *after* the document was created would issue it twice.
+    retried when a second call can't duplicate the document: the provider dedupes on
+    identifier_id, or it can be asked for the document the timed-out call may have
+    created (recovers_documents), in which case the retry adopts it.
     """
     # Claimed under a row lock: a duplicate signal, a double click or an acks_late
     # redelivery must not run a second attempt while one is in flight.
@@ -76,7 +77,9 @@ def _attempt(task, row, provider, order, call):
     # then record the new address even though the document was issued to the old one.
     issued_billing_data = billing_data(order)
     try:
-        document = call()
+        document = _find_existing(row, provider, order)
+        if document is None:
+            document = call()
     except ProviderError as e:
         row.status = IssuedInvoice.STATUS_ERROR
         # Stored in the event's language: it's read in the Control panel, not here.
@@ -93,14 +96,13 @@ def _attempt(task, row, provider, order, call):
         )
         return None
     except Exception as e:  # network/infra failure
-        retry = (
-            provider.deduplicates_issuance and task.request.retries < task.max_retries
-        )
+        safe = provider.deduplicates_issuance or provider.recovers_documents
+        retry = safe and task.request.retries < task.max_retries
         with language(provider.event.settings.locale):
             params = {"provider": provider.verbose_name, "error": str(e)}
             if retry:
                 message = _("%(error)s — retrying automatically in a few minutes.")
-            elif provider.deduplicates_issuance:
+            elif safe:
                 message = _("%(error)s — gave up after several attempts.")
             else:
                 message = _(
@@ -137,6 +139,33 @@ def _attempt(task, row, provider, order, call):
     return row
 
 
+def _find_existing(row, provider, order):
+    """
+    The document this row is for, if the provider already has it — so it is adopted
+    rather than issued a second time.
+
+    Asked before any attempt that could duplicate one: every attempt for a provider
+    with no idempotency field (Moloni — a timed-out insert, a stale claim, a row that
+    went missing), and every re-attempt for one that has it (Fact.pt rejects the
+    duplicate anyway, but the rejection leaves the row with no document; the lookup
+    links it back). Not the first attempt of a deduplicating provider: nothing to find.
+    """
+    if not provider.recovers_documents:
+        return None
+    if row.attempts <= 1 and provider.deduplicates_issuance:
+        return None
+    document = provider.find_document(row.identifier_id, row.kind, row.created)
+    if document is not None:
+        logger.info(
+            "ptinvoicing: %s for %s already exists at %s as %s, adopting it",
+            row.kind,
+            order.code,
+            provider.identifier,
+            document.document_id,
+        )
+    return document
+
+
 def _email(row, send):
     row.email_sent = send()
     row.save(update_fields=["email_sent"])
@@ -163,6 +192,17 @@ def issue_invoice(self, order_pk, event_pk=None):
                 "ptinvoicing: order %s is not paid (status %s), skipping",
                 order.code,
                 order.status,
+            )
+            return
+
+        if is_free(order):
+            # pretix sends order_paid for a 0.00 order too (its "free" provider), and
+            # the admin's button can target one. No row: nothing was paid, so there is
+            # no document to issue and nothing for the panel to call missing.
+            logger.info(
+                "ptinvoicing: order %s is free (total %s), nothing to invoice",
+                order.code,
+                order.total,
             )
             return
 

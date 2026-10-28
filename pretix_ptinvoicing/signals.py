@@ -34,7 +34,7 @@ from pretix.presale.signals import order_info_top as presale_order_info_top
 from .forms import ItemSettingsForm
 from .mail import send_billing_changed_email, send_connection_expired_email
 from .models import IssuedInvoice, ItemSettings
-from .orderdata import billing_changed, item_settings
+from .orderdata import billing_changed, is_free, item_settings
 from .providers import get_provider
 from .tasks import issue_credit_note, issue_invoice
 
@@ -285,11 +285,15 @@ def ptinvoicing_order_info(sender, order, request, **kwargs):
         ),
         "cycles": cycles,
         "is_paid": is_paid,
+        # A free order is "paid" to pretix but has nothing to invoice (tasks.py skips
+        # it); the panel says so instead of offering a button that would do nothing.
+        "is_free": is_free(order),
         "billing_changed": uncredited and billing_changed(order, uncredited),
         "changed_invoice": uncredited,
-        # Paid, and nothing uncredited covers it: no invoice yet, or the last one was
-        # credited (a refund) before this payment.
+        # Paid for something, and nothing uncredited covers it: no invoice yet, or the
+        # last one was credited (a refund) before this payment.
         "needs_invoice": is_paid
+        and not is_free(order)
         and (
             not cycles
             or bool(

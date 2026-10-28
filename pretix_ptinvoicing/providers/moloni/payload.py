@@ -109,7 +109,7 @@ def build_catalog_product(
         "name": (line.catalog_name or line.name)[:100],
         "reference": reference,
         # Only the catalog default; every document line sends its own price.
-        "price": float(line.net),
+        "price": float(line.price_net),
         "unit_id": event_settings.get("moloni_unit_id", as_type=int),
         "has_stock": 0,
         "stock": 0,
@@ -128,10 +128,12 @@ def build_products(lines, event_settings, product_ids, tax_rate):
             # nothing to the buyer.
             "qty": line.qty,
             # Net, 8 decimals (see set_nets): Moloni applies `taxes` on top of `price` —
-            # confirmed on real documents.
-            "price": float(line.net),
+            # confirmed on real documents — after the line's percentage `discount`
+            # (a voucher or automatic discount in pretix; 0 otherwise). The draft that
+            # settled it: 28.45528 at 42.8571429% gave incidence 16.26016.
+            "price": float(line.price_net),
             "order": index,
-            "discount": 0,
+            "discount": float(line.discount),
             **line_tax(line, event_settings, tax_rate),
         }
         for index, line in enumerate(lines)

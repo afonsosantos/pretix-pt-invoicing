@@ -1,4 +1,5 @@
 import re
+from decimal import Decimal
 from unittest import mock
 
 import pytest
@@ -973,3 +974,31 @@ def test_buyer_download_honours_the_show_in_order_setting(
         _buyer_order_url(event, paid_order) + f"invoicing/{issued_invoice.pk}/download/"
     )
     assert response.status_code == 404
+
+
+@pytest.fixture
+def free_paid_order(paid_order):
+    with scopes_disabled():
+        paid_order.total = Decimal("0.00")
+        paid_order.save(update_fields=["total"])
+    return paid_order
+
+
+@pytest.mark.django_db
+def test_issue_view_refuses_a_free_order(logged_in_client, event, free_paid_order):
+    with mock.patch("pretix_ptinvoicing.views.issue_invoice") as task:
+        response = logged_in_client.post(
+            ISSUE_URL.format(event.organizer.slug, event.slug, free_paid_order.code),
+            follow=True,
+        )
+    task.apply_async.assert_not_called()
+    assert "there is nothing to invoice" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_order_page_panel_says_a_free_order_has_nothing_to_invoice(
+    logged_in_client, plugin_enabled_event, free_paid_order
+):
+    body = _order_page(logged_in_client, plugin_enabled_event, free_paid_order)
+    assert "there is nothing to invoice" in body
+    assert "Issue invoice now" not in body
