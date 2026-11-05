@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.utils import timezone
+from django.utils.translation import gettext as _
 
 logger = logging.getLogger(__name__)
 
@@ -342,6 +343,66 @@ def is_valid_pt_nif(nif):
     return (0 if check >= 10 else check) == int(nif[8])
 
 
+def _typed_tin(ia, custom_field_is_nif):
+    """
+    (number, from_custom_field): what the buyer typed as their tax number on invoice
+    address `ia` — the VAT ID field, else the custom field when it holds the NIF —
+    without the spaces, dots and dashes buyers put in ("PT 123 456 789", "123.456.789").
+    """
+    if not ia:
+        return "", False
+    typed = (getattr(ia, "vat_id", None) or "").strip()
+    from_custom_field = False
+    if not typed and custom_field_is_nif:
+        typed = (getattr(ia, "custom_field", None) or "").strip()
+        from_custom_field = True
+    return re.sub(r"[\s.\-]", "", typed), from_custom_field
+
+
+def _without_pt(tin):
+    return tin[2:] if tin.upper().startswith("PT") else tin
+
+
+def nif_problem(event, invoice_address, free=False):
+    """
+    What to tell a buyer whose invoice address breaks the event's tax number rule
+    (ptinvoicing_nif_required), or None when it passes.
+
+    The rule, for Portuguese addresses: a business must give a NIF, and so must an
+    individual when pretix itself requires the invoice address; otherwise an individual
+    may leave it empty. A number that is given has to pass its check digit either way —
+    bare_tin would drop it, and the invoice would go to the final consumer.
+
+    Nothing is asked of a `free` order (it gets no invoice), nor where there's no field
+    to type the number into: the rule is about the custom field, which individuals see
+    too. checkout.js enforces the same in the browser; this is what holds when it
+    doesn't run.
+    """
+    settings = event.settings
+    if (
+        free
+        or not settings.get("ptinvoicing_nif_required", as_type=bool)
+        or not settings.get("ptinvoicing_nif_custom_field", as_type=bool)
+        or not settings.get("invoice_address_asked", as_type=bool)
+        or not settings.get("invoice_address_custom_field")
+    ):
+        return None
+    ia = invoice_address
+    if not ia or str(ia.country or "") != "PT":
+        return None
+
+    typed, _from_custom_field = _typed_tin(ia, True)
+    if typed:
+        if is_valid_pt_nif(_without_pt(typed)):
+            return None
+        return _("“%(nif)s” is not a valid Portuguese tax number (NIF).") % {
+            "nif": typed
+        }
+    if ia.is_business or settings.get("invoice_address_required", as_type=bool):
+        return _("Please enter your tax number (NIF) in the invoice address.")
+    return None
+
+
 def bare_tin(order, custom_field_is_nif=False):
     """
     The buyer's NIF, bare (no "PT" prefix), or None.
@@ -353,23 +414,14 @@ def bare_tin(order, custom_field_is_nif=False):
     `custom_field_is_nif` says the organizer has repurposed it for exactly that.
     """
     ia = getattr(order, "invoice_address", None)
-    if not ia:
-        return None
-
-    vat_id = (getattr(ia, "vat_id", None) or "").strip()
-    from_custom_field = False
-    if not vat_id and custom_field_is_nif:
-        vat_id = (getattr(ia, "custom_field", None) or "").strip()
-        from_custom_field = True
+    vat_id, from_custom_field = _typed_tin(ia, custom_field_is_nif)
     if not vat_id:
         return None
 
-    # Buyers type "PT 123 456 789" or "123.456.789" as often as the bare number.
-    vat_id = re.sub(r"[\s.\-]", "", vat_id)
     looks_portuguese = vat_id.upper().startswith("PT") or (
         ia.country and str(ia.country) == "PT"
     )
-    tin = vat_id[2:].strip() if vat_id.upper().startswith("PT") else vat_id
+    tin = _without_pt(vat_id)
 
     if looks_portuguese and not is_valid_pt_nif(tin):
         # Don't hand a provider a number that will bounce; issue to the final consumer

@@ -2,12 +2,14 @@ import hashlib
 import logging
 import random
 from decimal import Decimal
+from functools import partial
 
 import requests
 from django import forms
 from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
 from pretix.base.forms import SettingsForm
+from pretix.base.models import Event
 
 from ...orderdata import (
     FINAL_CONSUMER_NIF,
@@ -190,7 +192,11 @@ MAPPING_PREFIX = "moloni_payment_method_id_"
 
 def mapped_payment_providers(event):
     """The payment-method table's rows: the event's active pretix payment methods —
-    not "free" (nothing is paid) nor meta providers (settings holders only)."""
+    not "free" (nothing is paid) nor meta providers (settings holders only). None for
+    an organizer: which methods are taken is each event's business, so the table is
+    only on the events' pages."""
+    if not isinstance(event, Event):
+        return []
     return [
         (identifier, pp)
         for identifier, pp in event.get_payment_providers().items()
@@ -217,6 +223,14 @@ class MoloniProvider(InvoiceProvider):
     # (verified on a real account: "pretix-test-LHLQ9" found FR M/16, a prefix of it
     # found nothing), so find_document can tell whether it already exists.
     recovers_documents = True
+
+    # The "Connect to Moloni" flow's state, kept beside the form's settings.
+    stored_keys = (
+        "moloni_access_token",
+        "moloni_refresh_token",
+        "moloni_token_expires",
+        "moloni_connection_expired",
+    )
 
     settings_template = "pretix_ptinvoicing/control/moloni_connection.html"
     logo = "pretix_ptinvoicing/logos/moloni.svg"
@@ -287,13 +301,52 @@ class MoloniProvider(InvoiceProvider):
 
         return callback_url()
 
-    def _store_token(self, access_token, refresh_token, expires_at):
-        # self.settings is writable, which is what makes OAuth workable here: without
+    @property
+    def connect_url(self):
+        from .views import flow_url
+
+        return flow_url(self.holder, "connect")
+
+    @property
+    def disconnect_url(self):
+        from .views import flow_url
+
+        return flow_url(self.holder, "disconnect")
+
+    @property
+    def connection_holder(self):
+        """
+        Whose tokens these are: the organizer's when the event inherits its connection
+        (or, before any token exists, the login a password grant would use), else the
+        event's own. Refreshed tokens are written back there and nowhere else — a
+        rotation spends the old refresh token, so an event keeping its own copy of an
+        inherited pair would leave the organizer's, and every other event's, dead.
+        """
+        for key in ("moloni_refresh_token", "moloni_username", "moloni_client_id"):
+            if self.settings.get(key):
+                return self.organizer if self.inherits(key) else self.holder
+        return self.holder
+
+    @property
+    def connection_inherited(self):
+        """The connection (whatever its state) is the organizer's, not the event's own."""
+        return self.inherits("moloni_refresh_token")
+
+    @property
+    def organizer_settings_url(self):
+        from ...views import settings_url
+
+        return settings_url(self.organizer, provider=self.identifier)
+
+    def _store_token(self, store, access_token, refresh_token, expires_at):
+        # The settings are writable, which is what makes OAuth workable here: without
         # caching, every issuance would burn a fresh grant.
-        self.settings.set("moloni_access_token", access_token)
-        self.settings.set("moloni_refresh_token", refresh_token or "")
-        self.settings.set("moloni_token_expires", str(expires_at))
-        self.settings.delete("moloni_connection_expired")
+        store.set("moloni_access_token", access_token)
+        store.set("moloni_refresh_token", refresh_token or "")
+        store.set("moloni_token_expires", str(expires_at))
+        # Set, not deleted: an event connecting on its own must stop inheriting the
+        # flag of an organizer whose connection has expired.
+        store.set("moloni_connection_expired", False)
 
     def hidden_settings_fields(self):
         if self.connection_state == "connected":
@@ -301,16 +354,15 @@ class MoloniProvider(InvoiceProvider):
         return ()
 
     def disconnect(self):
-        for key in (
-            "moloni_access_token",
-            "moloni_refresh_token",
-            "moloni_token_expires",
-            "moloni_connection_expired",
-        ):
+        # The holder's own connection only: an event disconnecting falls back to its
+        # organizer's, if there is one.
+        for key in self.stored_keys:
             self.settings.delete(key)
 
     def connect(self, code, redirect_uri):
-        self._client().exchange_code(code, redirect_uri)
+        # Always the holder's own: connecting on an event's page gives that event a
+        # connection of its own, it never replaces the organizer's.
+        self._client(store=self.settings).exchange_code(code, redirect_uri)
 
     def keepalive(self):
         """
@@ -328,7 +380,7 @@ class MoloniProvider(InvoiceProvider):
             client.refresh()
         except ProviderUnreachable:
             logger.warning(
-                "moloni: keepalive could not reach Moloni for %s", self.event
+                "moloni: keepalive could not reach Moloni for %s", self.holder
             )
             return False
         except MoloniAPIError as e:
@@ -336,13 +388,16 @@ class MoloniProvider(InvoiceProvider):
                 # An issuance refreshed at the same moment; its new pair is stored.
                 return False
             if not e.detail or self._has_password():
-                logger.warning("moloni: keepalive refresh failed for %s", self.event)
+                logger.warning("moloni: keepalive refresh failed for %s", self.holder)
                 return False
-            self.settings.set("moloni_connection_expired", True)
+            self.connection_holder.settings.set("moloni_connection_expired", True)
             return True
         return False
 
-    def _client(self):
+    def _client(self, store=None):
+        # `store` is where the tokens live: read through self.settings like everything
+        # else (same values, inherited or not), written back to it alone.
+        store = store or self.connection_holder.settings
         return MoloniClient(
             client_id=self.settings.get("moloni_client_id"),
             client_secret=self.settings.get("moloni_client_secret"),
@@ -351,18 +406,18 @@ class MoloniProvider(InvoiceProvider):
             access_token=self.settings.get("moloni_access_token") or None,
             refresh_token=self.settings.get("moloni_refresh_token") or None,
             expires_at=float(self.settings.get("moloni_token_expires") or 0),
-            on_token=self._store_token,
-            reload_tokens=self._reload_tokens,
+            on_token=partial(self._store_token, store),
+            reload_tokens=partial(self._reload_tokens, store),
         )
 
-    def _reload_tokens(self):
+    def _reload_tokens(self, store):
         # Straight from the database: the settings cache would hand back the very token
         # another worker just spent.
-        self.settings.flush()
+        store.flush()
         return (
-            self.settings.get("moloni_access_token") or None,
-            self.settings.get("moloni_refresh_token") or None,
-            float(self.settings.get("moloni_token_expires") or 0),
+            store.get("moloni_access_token") or None,
+            store.get("moloni_refresh_token") or None,
+            float(store.get("moloni_token_expires") or 0),
         )
 
     def _next_customer_number(self, client, company_id):
@@ -939,7 +994,7 @@ class MoloniProvider(InvoiceProvider):
         # posts fields that have a value, so empty rows would never get a dropdown.
         mapping = [
             payment_method_key(identifier)
-            for identifier, _pp in mapped_payment_providers(self.event)
+            for identifier, _pp in mapped_payment_providers(self.holder)
         ]
         fetched = {}
         for field, endpoint, id_key, label_key in (

@@ -43,10 +43,13 @@ def _discover_providers():
 PROVIDERS = _discover_providers()
 
 
-def get_provider(event):
-    """The provider configured for this event, or None if none is selected."""
-    cls = PROVIDERS.get(event.settings.get("ptinvoicing_provider") or "")
-    return cls(event) if cls else None
+def get_provider(holder):
+    """
+    The provider selected for this event, or None if none is. Also takes an organizer,
+    for the defaults its events inherit.
+    """
+    cls = PROVIDERS.get(holder.settings.get("ptinvoicing_provider") or "")
+    return cls(holder) if cls else None
 
 
 def provider_choices():

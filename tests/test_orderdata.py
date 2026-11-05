@@ -146,3 +146,76 @@ def test_billing_changed_compares_with_what_was_issued(order):
         ia.save()
         order.refresh_from_db()
         assert billing_changed(order, doc)
+
+
+@pytest.fixture
+def nif_event(event):
+    # Everything the tax number rule needs: the plugin's two options, and pretix's own
+    # custom invoice-address field, the one the number is typed into.
+    event.settings.ptinvoicing_nif_custom_field = True
+    event.settings.ptinvoicing_nif_required = True
+    event.settings.invoice_address_asked = True
+    event.settings.invoice_address_custom_field = "NIF"
+    return event
+
+
+def _address(**fields):
+    return InvoiceAddress(**{"country": "PT", **fields})
+
+
+@pytest.mark.django_db
+def test_nif_is_required_of_a_business_and_optional_for_an_individual(nif_event):
+    from pretix_ptinvoicing.orderdata import nif_problem
+
+    assert nif_problem(nif_event, _address(is_business=True))
+    assert nif_problem(nif_event, _address(is_business=False)) is None
+    assert (
+        nif_problem(nif_event, _address(is_business=True, custom_field="237892294"))
+        is None
+    )
+    # No address at all: the buyer skipped an optional form.
+    assert nif_problem(nif_event, None) is None
+
+
+@pytest.mark.django_db
+def test_nif_is_required_of_everyone_when_the_address_is_required(nif_event):
+    from pretix_ptinvoicing.orderdata import nif_problem
+
+    nif_event.settings.invoice_address_required = True
+    assert nif_problem(nif_event, _address(is_business=False))
+    assert (
+        nif_problem(nif_event, _address(is_business=False, custom_field="237 892 294"))
+        is None
+    )
+    # ...but never for an order with nothing to invoice.
+    assert nif_problem(nif_event, _address(is_business=False), free=True) is None
+
+
+@pytest.mark.django_db
+def test_a_nif_that_fails_its_check_digit_is_refused_even_when_optional(nif_event):
+    from pretix_ptinvoicing.orderdata import nif_problem
+
+    problem = nif_problem(
+        nif_event, _address(is_business=False, custom_field="237892295")
+    )
+    assert "237892295" in problem
+
+
+@pytest.mark.django_db
+def test_nif_rule_leaves_foreign_addresses_and_unconfigured_events_alone(nif_event):
+    from pretix_ptinvoicing.orderdata import nif_problem
+
+    assert nif_problem(nif_event, _address(is_business=True, country="ES")) is None
+
+    business = _address(is_business=True)
+    for key in (
+        "ptinvoicing_nif_required",
+        "ptinvoicing_nif_custom_field",
+        # Without pretix's custom field there is nowhere to type the number.
+        "invoice_address_custom_field",
+    ):
+        saved = nif_event.settings.get(key)
+        nif_event.settings.set(key, "")
+        assert nif_problem(nif_event, business) is None, key
+        nif_event.settings.set(key, saved)
+    assert nif_problem(nif_event, business)

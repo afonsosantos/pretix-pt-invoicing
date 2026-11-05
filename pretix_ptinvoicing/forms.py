@@ -85,6 +85,32 @@ class ProviderSelectForm(SettingsForm):
             "VAT ID field is hidden there, businesses included."
         ),
     )
+    ptinvoicing_nif_required = forms.BooleanField(
+        label=_("Require the tax number at checkout"),
+        required=False,
+        help_text=_(
+            "For Portuguese addresses: business customers must always enter a tax "
+            "number, and so must individuals when pretix's own “Require invoice "
+            "address” (Settings → Invoicing) is on; otherwise individuals may leave it "
+            "empty. A number that fails its check digit is refused. Applies to the "
+            "custom field above, so it needs that option; free orders are never asked."
+        ),
+    )
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get("ptinvoicing_nif_required") and not cleaned.get(
+            "ptinvoicing_nif_custom_field"
+        ):
+            self.add_error(
+                "ptinvoicing_nif_required",
+                _(
+                    "Turn on the custom tax number field above first: it is the field "
+                    "this makes mandatory."
+                ),
+            )
+        return cleaned
+
     ptinvoicing_itemize_option = forms.BooleanField(
         label=_("Let buyers itemize the invoice by attendee"),
         required=False,

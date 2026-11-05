@@ -49,6 +49,10 @@ migration::
 Restart pretix and enable **Portuguese invoicing** for an event under **Settings → Plugins**.
 Then follow the `configuration guide`_.
 
+The settings — provider, credentials and Moloni connection included — can also be set once
+for all of an organizer's events, under the organizer's **Settings → Invoicing (PT)**. Each
+event uses them until it saves something else on its own invoicing settings page.
+
 Development
 -----------
 

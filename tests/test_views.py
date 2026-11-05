@@ -27,6 +27,7 @@ def test_get_settings_page(logged_in_client, event):
     assert response.status_code == 200
     assert b"ptinvoicing_provider" in response.content
     assert b"API token" in response.content
+    assert b'href="https://docs.afonsosantos.me/pt-invoicing/"' in response.content
     # The whole provider-agnostic form renders, not just the provider selector.
     assert b"ptinvoicing_email_invoice" in response.content
     assert b"ptinvoicing_email_credit_note" in response.content
@@ -1002,3 +1003,32 @@ def test_order_page_panel_says_a_free_order_has_nothing_to_invoice(
     body = _order_page(logged_in_client, plugin_enabled_event, free_paid_order)
     assert "there is nothing to invoice" in body
     assert "Issue invoice now" not in body
+
+
+@pytest.mark.django_db
+def test_requiring_the_tax_number_needs_the_custom_field_option(
+    logged_in_client, event
+):
+    # The rule is about the custom field: without it there is nothing to make mandatory.
+    url = SETTINGS_URL.format(event.organizer.slug, event.slug)
+    response = logged_in_client.post(
+        url, data={"ptinvoicing_provider": "", "ptinvoicing_nif_required": "on"}
+    )
+    assert response.status_code == 200
+    assert "Turn on the custom tax number field" in response.content.decode()
+    with scopes_disabled():
+        event.settings.flush()
+        assert not event.settings.get("ptinvoicing_nif_required", as_type=bool)
+
+    response = logged_in_client.post(
+        url,
+        data={
+            "ptinvoicing_provider": "",
+            "ptinvoicing_nif_custom_field": "on",
+            "ptinvoicing_nif_required": "on",
+        },
+    )
+    assert response.status_code == 302
+    with scopes_disabled():
+        event.settings.flush()
+        assert event.settings.get("ptinvoicing_nif_required", as_type=bool)
