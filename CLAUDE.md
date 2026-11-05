@@ -297,8 +297,9 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
     `ProviderUnreachable` is returned as `{"error": ...}` with HTTP 400; the settings-page JS
     surfaces that in the fieldset's `.ptinvoicing-lookup-status` line (`role="status"`,
     `aria-live`) rather than failing silently.
-- `pretix_ptinvoicing/urls.py` — all five views registered under
-  `control/event/<organizer>/<event>/invoicing/...` (plain `urlpatterns`, not `event_patterns` —
+- `pretix_ptinvoicing/urls.py` — the event's views registered under
+  `control/event/<organizer>/<event>/invoicing/...`, the organizer's settings page under
+  `control/organizer/<organizer>/invoicing/settings/...` (plain `urlpatterns`, not `event_patterns` —
   Control panel plugin pages use the full literal path, same convention as `pretix-eupago`'s
   settings/orders pages and pretix's own in-tree plugins). **Provider-specific URLs live in
   the provider**, as `providers/<name>/urls.py` (Moloni's OAuth connect/disconnect/callback);
@@ -343,6 +344,75 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   `makemigrations --check --dry-run` with `GITHUB_WORKFLOW=1` set — `tests/settings.py` disables
   migrations otherwise, and the command then refuses to run at all.
 
+### Organizer-level settings (issue #13)
+
+Every setting — the generic ones, the provider choice, its credentials and Moloni's connection —
+can be set on the **organizer** and is inherited by its events. Nothing was moved in storage:
+pretix's hierarkey already falls back from `event.settings` to `organizer.settings`, so every
+*read* in the plugin worked unchanged. What had to be built is the page, and the writes.
+
+- **"Holder"** is the word used throughout for "an event or an organizer": `InvoiceProvider(holder)`
+  sets `self.holder`, `self.event` (`None` for an organizer), `self.organizer`, and
+  `self.settings = holder.settings`. `get_provider(holder)`, `provider_forms(holder, data, bound)`,
+  `save_valid_fields(holder, data, provider)` and `settings_url(holder, provider=None)` all take
+  one. A provider built for an organizer only ever does lookups and connecting — documents are
+  always issued for an event.
+- **Views**: `SettingsMixin` / `LookupsMixin` (and Moloni's `ConnectMixin` / `DisconnectMixin`)
+  hold the logic against `self.holder`; `EventHolderMixin` (event permission + `PluginEnabledMixin`)
+  and `OrganizerHolderMixin` (`can_change_organizer_settings`, no plugin check — plugins are
+  enabled per event, and these are only defaults) say which holder. URLs:
+  `control/organizer/<organizer>/invoicing/settings/` (+ `lookups/`, + `moloni/connect/`,
+  `moloni/disconnect/`), names prefixed `organizer_`. `settings.js` needed no change: it derives
+  `lookups/` from the page's own path.
+- **Templates**: `settings_form.html` is the page; `settings.html` (extends pretix's event
+  `settings_base.html`, block `inside`) and `organizer_settings.html` (extends
+  `organizers/base.html`, block `inner`) only include it. `confirm.html` takes an optional
+  `base_template`. The sidebar entry comes from `nav_organizer` (`ptinvoicing_nav_organizer`),
+  parented under the organizer's "Settings". `nav_organizer` is an `OrganizerPluginSignal` that
+  event-level plugins may still use (`allow_legacy_plugins`, with a `DeprecationWarning` — pretix's
+  own stripe plugin does the same); when pretix drops that, the plugin has to become
+  `PLUGIN_LEVEL_EVENT_ORGANIZER_HYBRID`.
+- **An event's Save stores only what differs** from the value in effect — that is
+  `HierarkeyForm.save()`'s own behaviour, and `save_valid_fields` was changed to match (it used
+  to `set()` everything, which on an inheriting event would have copied the organizer's whole
+  configuration down on every "Connect"). Consequence, same as in pretix core: once a value is
+  saved on an event it overrides the organizer's for good, even when later set equal.
+  `ResetSettingsView` ("Use the organizer's settings", `settings/reset/`, GET confirms) is the
+  way back: it deletes `own_settings_keys(event)` — every field of every settings form plus each
+  provider's `stored_keys` (Moloni's tokens) that the event stores itself
+  (`event.settings._cache()`, hierarkey's own-level dict; private, but there is no public "is
+  this key set at this level").
+- **Writes must go where the value lives** — `InvoiceProvider.inherits(key)` says whether an
+  event takes `key` from its organizer. Moloni's tokens are the case that matters: a refresh
+  *spends* the old refresh token, so an event that wrote a refreshed pair to its own settings
+  would leave the organizer's (and every other event's) dead. `MoloniProvider.connection_holder`
+  is whose tokens these are — the first of `moloni_refresh_token` / `moloni_username` /
+  `moloni_client_id` that has a value decides: inherited → the organizer, else the holder — and
+  `_client(store=)` reads through `self.settings` but writes tokens (and re-reads them in
+  `adopt_rotated`) on `connection_holder.settings` only. `connect()` is the exception: it always
+  stores on the holder itself, so "Connect this event on its own" on an event's page gives that
+  event a connection of its own and never replaces the organizer's (an event admin must not be
+  able to swap the organizer's Moloni account). `disconnect()` deletes the holder's own keys, so
+  an event falls back to the organizer's. `_store_token` **sets** `moloni_connection_expired` to
+  `False` rather than deleting it: an event connecting on its own must stop inheriting an expired
+  organizer's flag.
+- **Keepalive once per connection**: `ptinvoicing_keepalive` visits organizers with a provider
+  set, then events with one of their own *or* whose organizer has one, and calls `keepalive()`
+  once per `provider.connection_holder` (two events sharing the organizer's connection would
+  otherwise rotate the token twice a day, the second with a spent token). A dead one is mailed
+  to each event's `contact_mail`, once per (connection, address); the mail links the
+  organizer's page when the connection is the organizer's.
+- **Not on the organizer's page**: Moloni's payment-method table (`mapped_payment_providers`
+  returns `[]` for a non-event — which methods are taken is per event). Its keys still inherit
+  if set there by hand.
+- `tests/test_organizer.py` covers all of the above; `organizer_client` in `conftest.py` is
+  `logged_in_client` with `all_organizer_permissions`.
+
+`DOCS_URL` (`apps.py`, translatable — the pt_PT catalog points it at the site's `/pt/` version)
+is linked from both settings pages and from the plugin's card: pretix renders
+`PretixPluginMeta.description` with `|safe`, so the description is a `format_lazy` ending in an
+`<a>`.
+
 ### The provider interface
 
 `pretix_ptinvoicing/providers/base.py` holds the whole contract — three small things:
@@ -356,7 +426,8 @@ unchanged (`factpt_*`), so stored credentials survive; only `ptinvoicing_provide
   automatic retry dead code. Code that swallows lookup errors must catch both.
 - `IssuedDocument` — dataclass, `document_id` / `link` / `permanent_url`. What `issue()` returns.
 - `InvoiceProvider` — `identifier`, `verbose_name`, `settings_form_class`,
-  `deduplicates_issuance`, constructed with the `event`; `is_configured`,
+  `deduplicates_issuance`, constructed with a **holder** (an event, or an organizer on its
+  settings page — see "Organizer-level settings"); `is_configured`,
   `issue(order, identifier_id)`, `download(document_id)`, and optional `lookups(data)`.
   `self.settings` is the event's hierarkey store and is **writable**, which is where a provider
   with expiring credentials (an OAuth access token) caches the refreshed one.
@@ -557,6 +628,25 @@ event settings in one flat hierarkey namespace shared with core and every other 
   !important`, because pretix's own JS (`data-display-dependency`) re-shows the field with an
   inline `display` that `hidden`/`style` would lose to. An event with "VAT ID required" would
   reject PT businesses. Skipped on PCI payment pages.
+- **Requiring the NIF** (`ptinvoicing_nif_required`, off by default, issues #11/#12; needs the
+  custom-field option — `ProviderSelectForm.clean` refuses it otherwise). The rule, for
+  **Portuguese addresses only**: a business must give one; an individual must when pretix's own
+  `invoice_address_required` ("Require invoice address") is on, and may leave it empty
+  otherwise; a number that is given must pass its check digit either way; a free order is never
+  asked (it gets no invoice). `orderdata.nif_problem(event, invoice_address, free)` is the rule,
+  returning the buyer-facing message or `None`.
+  **pretix has no signal into the invoice address form**, so it is enforced in two places:
+  `checkout.js` in the browser — it sets `required` and a `setCustomValidity` message on the
+  custom field and adds pretix's own `<i class="label-required">` marker; that is enough to
+  block the form because pretix's presale JS sets `novalidate` and calls `checkValidity()` /
+  `reportValidity()` itself on submit (verified on a real checkout) — and
+  `ptinvoicing_validate_order` (pretix's `validate_order`, raising `OrderError`) when the order
+  is placed, for a buyer whose script didn't run. The buyer's later "change invoice address"
+  page has only the script. `checkout.js` is static, so the event's rule travels as `data-*`
+  on its own `<script>` tag (`document.currentScript.dataset`, read at load time): 
+  `data-nif-required`, `data-address-required`, `data-text-invalid` and `data-text-required` —
+  the last is pretix's own `pgettext("form", "required")`, passed from the server because
+  pretix's JavaScript catalog has no translation for it.
 - **Moloni payment-method table**: `MoloniSettingsForm.__init__` adds an optional
   `moloni_payment_method_id_<pretix provider>` per enabled pretix payment provider (not `free`,
   not meta providers), rendered as a table by `payment_methods.html` (excluded from
@@ -742,7 +832,7 @@ Since `pretix_ptinvoicing` is a real Django app, Django's i18n machinery discove
 no pretix-specific wiring needed, `{% load i18n %}` / `_()` / `gettext_lazy()` calls throughout the
 codebase just work once a `.mo` file exists.
 
-The pt_PT catalog is complete (`msgfmt --statistics`: 183 translated, 0 fuzzy, 0 untranslated).
+The pt_PT catalog is complete (`msgfmt --statistics`: 223 translated, 0 fuzzy, 0 untranslated).
 "Provider" is "serviço de faturação", never "fornecedor": on an invoice, *fornecedor* is the
 seller. "Retry issuance" is "Tentar emitir novamente", not "Reemitir" (which reads as issuing
 again).
@@ -842,7 +932,9 @@ real account.
   call. `on_token` hands each new pair back to the provider, which caches it in `event.settings` —
   without that, every issuance would burn a fresh password grant.
 - `views.py` — "Connect to Moloni", the authorization-code grant, so no password has to be
-  stored (username/password stay as an optional fallback). `ConnectView` saves every *valid*
+  stored (username/password stay as an optional fallback). Each view exists for an event and
+  for an organizer (`OrganizerConnectView`, `OrganizerDisconnectView`; the callback serves
+  both, the session entry carrying `event` or `organizer`). `ConnectView` saves every *valid*
   field typed on the settings page (`save_valid_fields`: the client id/secret above all, but
   nothing else is lost to the round-trip either — never the provider choice, though: connecting
   isn't choosing) and redirects to Moloni; `DisconnectView` asks first (GET confirms, POST
@@ -861,8 +953,8 @@ real account.
   The expiry e-mail is sent **only by the daily keepalive**: an issuance that finds the
   connection dead records an error row, but neither marks it expired nor e-mails.
   The refresh token lasts 14 days, so `signals.py`'s `ptinvoicing_keepalive` (`periodic_task`,
-  `minimum_interval` daily) calls every selected provider's `keepalive()`; Moloni's rotates the
-  refresh token. Only a refusal *from Moloni* (`MoloniAPIError` with `detail`) with no password
+  `minimum_interval` daily) calls every selected provider's `keepalive()` — once per
+  connection, see "Organizer-level settings"; Moloni's rotates the refresh token. Only a refusal *from Moloni* (`MoloniAPIError` with `detail`) with no password
   to fall back to marks `moloni_connection_expired` and e-mails the event's `contact_mail`; a
   network failure (`ProviderUnreachable`) just waits for tomorrow's run.
   **Concurrent refreshes**: rotation spends the old refresh token, so when two workers (or the

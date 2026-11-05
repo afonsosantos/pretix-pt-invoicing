@@ -80,10 +80,20 @@ def send_connection_expired_email(event, provider):
             event,
         )
         return
-    settings_url = settings.SITE_URL + reverse(
-        "plugins:pretix_ptinvoicing:settings",
-        kwargs={"organizer": event.organizer.slug, "event": event.slug},
-    )
+    # Where it is reconnected: on the organizer's page when the connection is the
+    # organizer's, shared by its events — the mail then names the organizer too.
+    connection = provider.connection_holder
+    if connection == event:
+        settings_url = reverse(
+            "plugins:pretix_ptinvoicing:settings",
+            kwargs={"organizer": event.organizer.slug, "event": event.slug},
+        )
+    else:
+        settings_url = reverse(
+            "plugins:pretix_ptinvoicing:organizer_settings",
+            kwargs={"organizer": connection.slug},
+        )
+    settings_url = settings.SITE_URL + settings_url
     try:
         mail(
             recipient,
@@ -99,7 +109,7 @@ def send_connection_expired_email(event, provider):
                 )
             ),
             {
-                "event": str(event.name),
+                "event": str(connection.name),
                 "provider": provider.verbose_name,
                 "url": settings_url,
             },

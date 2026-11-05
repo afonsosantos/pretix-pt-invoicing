@@ -1,0 +1,156 @@
+{% load i18n %}
+{% load bootstrap3 %}
+{% load static %}
+{% comment %}
+    The invoicing settings page itself, included by settings.html (an event's) and
+    organizer_settings.html (an organizer's, whose values its events inherit): the two
+    only differ in the pretix page they sit in, and in the note at the top.
+{% endcomment %}
+<link rel="stylesheet" href="{% static 'pretix_ptinvoicing/settings.css' %}">
+<h1>{% trans "Invoicing (PT)" %}</h1>
+<p>
+    {% blocktrans trimmed %}
+        Pick the invoicing provider to issue invoice-receipts with once payment is
+        confirmed, and configure its API access below.
+    {% endblocktrans %}
+    <a href="{{ docs_url }}" target="_blank" rel="noopener">
+        <span class="fa fa-book" aria-hidden="true"></span>
+        {% trans "Documentation" %}
+    </a>
+</p>
+{% if organizer_settings_url %}
+    <div class="alert alert-info">
+        {% blocktrans trimmed with url=organizer_settings_url %}
+            This event starts from the <a href="{{ url }}">organizer's invoicing
+            settings</a>. What you save here applies to this event only, and keeps
+            applying even if the organizer's settings change later.
+        {% endblocktrans %}
+        {% if has_own_settings %}
+            <a class="btn btn-default btn-xs"
+               href="{% url "plugins:pretix_ptinvoicing:settings_reset" organizer=request.organizer.slug event=request.event.slug %}">
+                {% trans "Use the organizer's settings" %}
+            </a>
+        {% endif %}
+    </div>
+{% else %}
+    <div class="alert alert-info">
+        {% blocktrans trimmed %}
+            These are the defaults for every event of this organizer: an event uses them
+            until something else is saved on its own invoicing settings page. The plugin
+            still has to be enabled on each event, and which payment method maps to
+            which is set per event.
+        {% endblocktrans %}
+    </div>
+{% endif %}
+{% comment %}
+    settings.js is a static file (CSP), so its user-facing strings are handed to it
+    translated, as data-* attributes on the form.
+{% endcomment %}
+<form action="" method="post" class="form-horizontal" enctype="multipart/form-data"
+      autocomplete="off" data-bwignore="true" data-1p-ignore="true" data-lpignore="true"
+      id="ptinvoicing-settings"
+      data-text-loading="{% trans "Loading options…" %}"
+      data-text-failed="{% trans "Could not load options:" %}"
+      data-text-unknown="{% trans "unknown error" %}"
+      data-text-unreachable="{% trans "Could not reach the server to load options." %}"
+      data-text-saved="{% trans "Saved value (no longer listed):" %}"
+      data-text-prefix-note="{% trans "With {provider}, prefix and product reference together may be at most {limit} characters: {left} left for the reference." %}">
+    {% csrf_token %}
+    {% bootstrap_form_errors select_form %}
+    {% comment %}
+        The provider field is rendered by hand as logo cards (radio inputs, so it
+        still posts as ptinvoicing_provider); the rest of the form renders whole.
+    {% endcomment %}
+    <div class="form-group">
+        <label class="col-md-3 control-label" id="ptinvoicing-provider-label">{{ select_form.ptinvoicing_provider.label }}</label>
+        <div class="col-md-9">
+            <div class="ptinvoicing-provider-cards" role="radiogroup" aria-labelledby="ptinvoicing-provider-label">
+                {% for card in provider_cards %}
+                    <label class="ptinvoicing-provider-card">
+                        <input type="radio" name="ptinvoicing_provider" value="{{ card.identifier }}"
+                               {% if card.identifier == selected_provider %}checked{% endif %}>
+                        <span class="ptinvoicing-provider-card-body">
+                            <span class="fa fa-check-circle ptinvoicing-provider-card-check" aria-hidden="true"></span>
+                            {% if card.logo %}
+                                <img src="{% static card.logo %}" alt="{{ card.label }}">
+                            {% else %}
+                                {{ card.label }}
+                            {% endif %}
+                        </span>
+                    </label>
+                {% endfor %}
+            </div>
+            <span class="help-block">{{ select_form.ptinvoicing_provider.help_text }}</span>
+        </div>
+    </div>
+    {% comment %}
+        The prefix is rendered by hand too, so the note about the selected provider's
+        reference limit sits in its own element for settings.js to keep current as the
+        admin types (the server renders it for the saved provider and prefix).
+    {% endcomment %}
+    {% with field=select_form.ptinvoicing_reference_prefix %}
+        <div class="form-group{% if field.errors %} has-error{% endif %}">
+            <label class="col-md-3 control-label" for="{{ field.id_for_label }}">{{ field.label }}</label>
+            <div class="col-md-9">
+                {{ field }}
+                {% for error in field.errors %}
+                    <span class="help-block text-danger">{{ error }}</span>
+                {% endfor %}
+                <span class="help-block">
+                    {{ field.help_text }}
+                    <span id="ptinvoicing-prefix-note">{{ select_form.prefix_note }}</span>
+                </span>
+            </div>
+        </div>
+    {% endwith %}
+    {% bootstrap_form select_form layout="horizontal" exclude="ptinvoicing_provider,ptinvoicing_reference_prefix" %}
+
+    <fieldset>
+        <legend>{% trans "E-mail" %}</legend>
+        {% bootstrap_form_errors email_form %}
+        {% bootstrap_form email_form layout="horizontal" %}
+    </fieldset>
+
+    {% for block in provider_blocks %}
+        <fieldset class="ptinvoicing-provider" data-provider="{{ block.identifier }}"
+                  data-lookup-triggers="{{ block.provider.lookup_triggers|join:" " }}"
+                  data-reference-limit-field="{{ block.provider.reference_limit_field|default:"" }}">
+            <legend>{{ block.label }}</legend>
+            {% if not block.provider.in_use %}
+                {% comment %}
+                    Picking a provider card only shows its settings; nothing is issued
+                    through it until it's saved with everything it needs (Moloni's
+                    company and series can only be picked once connected) — a Save the
+                    admin can easily miss.
+                {% endcomment %}
+                <div class="alert alert-info">
+                    {% blocktrans trimmed with provider=block.label %}
+                        Not in use yet: fill in the {{ provider }} settings below, then
+                        click <strong>Save</strong>. No documents are issued through
+                        {{ provider }} until you do.
+                    {% endblocktrans %}
+                </div>
+            {% endif %}
+            {% if block.provider.settings_template %}
+                {% include block.provider.settings_template with provider=block.provider %}
+            {% endif %}
+            {% bootstrap_form_errors block.form %}
+            {% bootstrap_form block.form layout="horizontal" exclude=block.form.table_fields %}
+            {% if block.form.payment_method_rows %}
+                {% include "pretix_ptinvoicing/control/payment_methods.html" with form=block.form %}
+            {% endif %}
+            <div class="form-group">
+                <div class="col-md-9 col-md-offset-3">
+                    <span class="help-block ptinvoicing-lookup-status" role="status" aria-live="polite"></span>
+                </div>
+            </div>
+        </fieldset>
+    {% endfor %}
+
+    <div class="form-group submit-group">
+        <button type="submit" class="btn btn-primary btn-save">
+            {% trans "Save" %}
+        </button>
+    </div>
+</form>
+<script type="application/javascript" src="{% static 'pretix_ptinvoicing/settings.js' %}"></script>

@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from pretix.base.models import Event
+
 
 class ProviderError(Exception):
     """
@@ -49,6 +51,9 @@ class InvoiceProvider:
     # must be namespaced by hand (e.g. factpt_token) — pretix stores event settings in one
     # flat namespace shared with core and every other plugin.
     settings_form_class = None
+    # Settings keys the provider stores by itself, beyond its form's fields (Moloni's
+    # OAuth tokens): what "use the organizer's settings" has to clear on an event too.
+    stored_keys = ()
     # Optional template rendered under the provider's fieldset on the settings page, with
     # the provider instance as `provider` — for anything that isn't a form field (Moloni's
     # "Connect" button and connection state).
@@ -87,11 +92,38 @@ class InvoiceProvider:
     # created is found, not re-created.
     recovers_documents = False
 
-    def __init__(self, event):
-        self.event = event
-        # The event's settings store. Writable: a provider whose credentials expire (an
-        # OAuth access token, say) may cache the refreshed one here.
-        self.settings = event.settings
+    def __init__(self, holder):
+        # An event — or an organizer, on its own settings page, where the defaults its
+        # events inherit are set (lookups and connecting only: documents are always
+        # issued for an event).
+        self.holder = holder
+        self.event = holder if isinstance(holder, Event) else None
+        self.organizer = holder.organizer if self.event else holder
+        # The holder's settings store; an event's falls back to its organizer's for
+        # whatever it doesn't set itself. Writable: a provider whose credentials expire
+        # (an OAuth access token, say) may cache the refreshed one — but see inherits().
+        self.settings = holder.settings
+
+    def inherits(self, key):
+        """
+        True when the event takes `key` from its organizer instead of storing its own.
+        Matters for anything a provider writes back: an inherited credential that gets
+        rotated has to be written where it came from, or the event forks it and every
+        other event of the organizer is left holding the spent one.
+        """
+        return (
+            self.event is not None
+            and key not in self.settings._cache()
+            and bool(self.organizer.settings.get(key))
+        )
+
+    @property
+    def connection_holder(self):
+        """
+        The event or organizer whose connection keepalive() keeps alive. One shared by
+        an organizer's events is then refreshed once a day, not once per event.
+        """
+        return self.holder
 
     @property
     def is_configured(self):
@@ -191,8 +223,8 @@ class InvoiceProvider:
 
     def keepalive(self):
         """
-        Called about once a day for every event using this provider, e.g. to rotate an
-        expiring refresh token. Return True if the connection turned out to be dead, and
-        the organizer is e-mailed to reconnect. Optional.
+        Called about once a day for every connection_holder using this provider, e.g.
+        to rotate an expiring refresh token. Return True if the connection turned out to
+        be dead, and the organizer is e-mailed to reconnect. Optional.
         """
         return False

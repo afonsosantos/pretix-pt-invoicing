@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: pretix-pt-invoicing\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-28 18:38+0000\n"
+"POT-Creation-Date: 2026-11-05 22:45+0000\n"
 "PO-Revision-Date: 2026-10-01 23:00+0100\n"
 "Last-Translator: Afonso Santos\n"
 "Language-Team: Portuguese (Portugal)\n"
@@ -15,6 +15,9 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
+
+msgid "https://docs.afonsosantos.me/pt-invoicing/"
+msgstr "https://docs.afonsosantos.me/pt/pt-invoicing/"
 
 msgid "Portuguese invoicing"
 msgstr "Faturação portuguesa"
@@ -28,6 +31,9 @@ msgstr ""
 "serviço de faturação português (Fact.pt ou Moloni), de forma assíncrona após "
 "a confirmação do pagamento, com um painel de acompanhamento e novas "
 "tentativas."
+
+msgid "Documentation"
+msgstr "Documentação"
 
 #, python-format
 msgid ""
@@ -93,6 +99,30 @@ msgstr ""
 "são ignorados, não são enviados. Passa a ser o único campo de NIF no "
 "checkout para moradas portuguesas: o campo de NIF do próprio pretix fica "
 "oculto, também para empresas."
+
+msgid "Require the tax number at checkout"
+msgstr "Exigir o NIF no checkout"
+
+msgid ""
+"For Portuguese addresses: business customers must always enter a tax number, "
+"and so must individuals when pretix's own “Require invoice address” "
+"(Settings → Invoicing) is on; otherwise individuals may leave it empty. A "
+"number that fails its check digit is refused. Applies to the custom field "
+"above, so it needs that option; free orders are never asked."
+msgstr ""
+"Para moradas portuguesas: os clientes empresa têm sempre de indicar o NIF, e "
+"os particulares também quando a opção “Exigir endereço de faturação” do "
+"próprio pretix (Definições → Faturação) está ligada; caso contrário, os "
+"particulares podem deixá-lo vazio. Um número cujo dígito de controlo não "
+"confira é recusado. Aplica-se ao campo personalizado acima, pelo que precisa "
+"dessa opção; nas encomendas gratuitas nunca é pedido."
+
+msgid ""
+"Turn on the custom tax number field above first: it is the field this makes "
+"mandatory."
+msgstr ""
+"Ligue primeiro a opção do campo personalizado de NIF, acima: é esse o campo "
+"que passa a ser obrigatório."
 
 msgid "Let buyers itemize the invoice by attendee"
 msgstr "Permitir ao comprador discriminar a fatura por participante"
@@ -259,6 +289,13 @@ msgstr "Fatura"
 
 msgid "Credit note"
 msgstr "Nota de crédito"
+
+#, python-format
+msgid "“%(nif)s” is not a valid Portuguese tax number (NIF)."
+msgstr "“%(nif)s” não é um NIF português válido."
+
+msgid "Please enter your tax number (NIF) in the invoice address."
+msgstr "Indique o seu NIF nos dados de faturação."
 
 msgid "API token (x-auth-token)"
 msgstr "Token da API (x-auth-token)"
@@ -580,6 +617,19 @@ msgstr "Preencha primeiro o Developer ID e o segredo do cliente."
 msgid "Disconnect from Moloni"
 msgstr "Desligar do Moloni"
 
+msgid "Disconnect"
+msgstr "Desligar"
+
+msgid "Disconnected from Moloni."
+msgstr "Desligado do Moloni."
+
+msgid ""
+"This removes the event's own connection to Moloni. It then uses the "
+"organizer's connection again."
+msgstr ""
+"Remove a ligação ao Moloni própria deste evento. O evento volta então a usar "
+"a ligação do organizador."
+
 msgid ""
 "No invoices or credit notes can be issued through Moloni for this event "
 "until you connect again."
@@ -587,11 +637,12 @@ msgstr ""
 "Não será possível emitir faturas nem notas de crédito pelo Moloni para este "
 "evento até voltar a ligar."
 
-msgid "Disconnect"
-msgstr "Desligar"
-
-msgid "Disconnected from Moloni."
-msgstr "Desligado do Moloni."
+msgid ""
+"No invoices or credit notes can be issued through Moloni for any event using "
+"the organizer's connection until you connect again."
+msgstr ""
+"Não será possível emitir faturas nem notas de crédito pelo Moloni para "
+"nenhum evento que use a ligação do organizador até voltar a ligar."
 
 msgid "Moloni did not authorize the connection."
 msgstr "O Moloni não autorizou a ligação."
@@ -615,6 +666,13 @@ msgstr "Discriminar a fatura por participante"
 
 msgid "Each ticket's line on the invoice shows the attendee's name."
 msgstr "A linha de cada bilhete na fatura indica o nome do participante."
+
+msgid "This is not a valid Portuguese tax number (NIF)."
+msgstr "Este não é um NIF português válido."
+
+msgctxt "form"
+msgid "required"
+msgstr "obrigatório"
 
 #, python-format
 msgid ""
@@ -689,8 +747,21 @@ msgstr "Ainda não foram emitidos documentos."
 msgid "Moloni connection"
 msgstr "Ligação ao Moloni"
 
+msgid "Connected through the organizer's settings"
+msgstr "Ligado através das definições do organizador"
+
 msgid "Connected"
 msgstr "Ligado"
+
+#, python-format
+msgid ""
+"The organizer's connection to Moloni has expired. Invoices can't be issued "
+"until it is connected again in the <a href=\"%(url)s\">organizer's invoicing "
+"settings</a>."
+msgstr ""
+"A ligação do organizador ao Moloni expirou. Não é possível emitir faturas "
+"até voltar a ser ligada nas <a href=\"%(url)s\">definições de faturação do "
+"organizador</a>."
 
 msgid ""
 "The connection to Moloni has expired. Invoices can't be issued until you "
@@ -701,6 +772,9 @@ msgstr ""
 
 msgid "Not connected"
 msgstr "Não ligado"
+
+msgid "Connect this event on its own"
+msgstr "Ligar este evento em separado"
 
 msgid "Reconnect to Moloni"
 msgstr "Voltar a ligar ao Moloni"
@@ -819,6 +893,30 @@ msgstr ""
 "Escolha o serviço de faturação com que emitir faturas-recibo depois de o "
 "pagamento ser confirmado e configure o acesso à sua API abaixo."
 
+#, python-format
+msgid ""
+"This event starts from the <a href=\"%(url)s\">organizer's invoicing "
+"settings</a>. What you save here applies to this event only, and keeps "
+"applying even if the organizer's settings change later."
+msgstr ""
+"Este evento parte das <a href=\"%(url)s\">definições de faturação do "
+"organizador</a>. O que guardar aqui aplica-se apenas a este evento, e "
+"continua a aplicar-se mesmo que as definições do organizador mudem depois."
+
+msgid "Use the organizer's settings"
+msgstr "Usar as definições do organizador"
+
+msgid ""
+"These are the defaults for every event of this organizer: an event uses them "
+"until something else is saved on its own invoicing settings page. The plugin "
+"still has to be enabled on each event, and which payment method maps to "
+"which is set per event."
+msgstr ""
+"Estas são as predefinições para todos os eventos deste organizador: um "
+"evento usa-as até que algo diferente seja guardado na sua própria página de "
+"definições de faturação. O plugin continua a ter de ser ativado em cada "
+"evento, e a correspondência entre métodos de pagamento é definida por evento."
+
 msgid "Loading options…"
 msgstr "A carregar opções…"
 
@@ -932,6 +1030,29 @@ msgstr "Serviço de faturação desconhecido."
 
 msgid "Invoicing settings saved."
 msgstr "Definições de faturação guardadas."
+
+msgid ""
+"This removes the invoicing settings saved on this event, its own provider "
+"connection included, so that it follows the organizer's invoicing settings. "
+"Documents already issued are not affected."
+msgstr ""
+"Remove as definições de faturação guardadas neste evento, incluindo a sua "
+"própria ligação ao serviço de faturação, para que passe a seguir as "
+"definições de faturação do organizador. Os documentos já emitidos não são "
+"afetados."
+
+msgid ""
+"The organizer has no invoicing provider selected: nothing will be issued for "
+"this event until one is."
+msgstr ""
+"O organizador não tem nenhum serviço de faturação selecionado: nada será "
+"emitido para este evento até que tenha."
+
+msgid "Use the organizer's invoicing settings"
+msgstr "Usar as definições de faturação do organizador"
+
+msgid "This event now follows the organizer's invoicing settings."
+msgstr "Este evento passa a seguir as definições de faturação do organizador."
 
 #~ msgid "Product category (Moloni)"
 #~ msgstr "Categoria de artigos (Moloni)"

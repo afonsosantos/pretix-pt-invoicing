@@ -1,8 +1,10 @@
-{% extends "pretixcontrol/event/base.html" %}
+{% extends base_template|default:"pretixcontrol/event/base.html" %}
 {% load i18n %}
 {% comment %}
     Confirmation before anything that can't be undone: issuing an official document, or
-    disconnecting a provider. Posts back to the URL that rendered it.
+    disconnecting a provider. Posts back to the URL that rendered it. An organizer's
+    page passes its own base_template, and always a `next` (there is no event to fall
+    back to for Cancel).
 {% endcomment %}
 {% block title %}{{ title }}{% endblock %}
 {% block content %}

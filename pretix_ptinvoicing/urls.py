@@ -7,6 +7,9 @@ from . import views
 from .providers import PROVIDERS
 
 _prefix = "control/event/<str:organizer>/<str:event>/invoicing/"
+# The organizer's settings page: the same settings, inherited by its events. Its
+# lookups/ sits right under it like the event's, which is where settings.js looks.
+_organizer = "control/organizer/<str:organizer>/invoicing/settings/"
 
 urlpatterns = [
     path(_prefix, views.IndexView.as_view(), name="index"),
@@ -15,6 +18,17 @@ urlpatterns = [
         _prefix + "settings/lookups/",
         views.SettingsLookupsView.as_view(),
         name="settings_lookups",
+    ),
+    path(
+        _prefix + "settings/reset/",
+        views.ResetSettingsView.as_view(),
+        name="settings_reset",
+    ),
+    path(_organizer, views.OrganizerSettingsView.as_view(), name="organizer_settings"),
+    path(
+        _organizer + "lookups/",
+        views.OrganizerSettingsLookupsView.as_view(),
+        name="organizer_settings_lookups",
     ),
     path(_prefix + "<str:code>/issue/", views.IssueView.as_view(), name="issue"),
     path(

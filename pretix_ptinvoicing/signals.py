@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django import forms
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.signals import post_save
 from django.dispatch import receiver
 from django.template.loader import get_template
@@ -11,6 +11,7 @@ from django.templatetags.static import static
 from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.translation import gettext_lazy as _
+from django.utils.translation import pgettext
 from django_scopes import scopes_disabled
 from pretix.base.models import (
     Event,
@@ -18,23 +19,33 @@ from pretix.base.models import (
     Order,
     OrderPayment,
     OrderRefund,
+    Organizer,
+    Organizer_SettingsStore,
 )
+from pretix.base.services.orders import OrderError
 from pretix.base.signals import (
     item_copy_data,
     order_modified,
     order_paid,
     periodic_task,
+    validate_order,
 )
-from pretix.control.signals import item_forms, nav_event, nav_event_settings
+from pretix.control.signals import (
+    item_forms,
+    nav_event,
+    nav_event_settings,
+    nav_organizer,
+)
 from pretix.control.signals import order_info as control_order_info
 from pretix.helpers.periodic import minimum_interval
 from pretix.presale.signals import contact_form_fields, html_head
 from pretix.presale.signals import order_info_top as presale_order_info_top
+from pretix.presale.views import get_cart_is_free
 
 from .forms import ItemSettingsForm
 from .mail import send_billing_changed_email, send_connection_expired_email
 from .models import IssuedInvoice, ItemSettings
-from .orderdata import billing_changed, is_free, item_settings
+from .orderdata import billing_changed, is_free, item_settings, nif_problem
 from .providers import get_provider
 from .tasks import issue_credit_note, issue_invoice
 
@@ -45,26 +56,48 @@ logger = logging.getLogger(__name__)
 @minimum_interval(minutes_after_success=24 * 60, minutes_after_error=60)
 def ptinvoicing_keepalive(sender, **kwargs):
     """
-    Daily InvoiceProvider.keepalive() for every event with a provider selected — what
-    stops Moloni's 14-day refresh token from lapsing on an event with no sales.
+    Daily InvoiceProvider.keepalive() for every organizer and event with a provider
+    selected — what stops Moloni's 14-day refresh token from lapsing where there are no
+    sales. Once per connection: an organizer's is shared by the events inheriting it,
+    and each refresh spends the token the next one would have used.
     """
     with scopes_disabled():
+        organizer_pks = Organizer_SettingsStore.objects.filter(
+            key="ptinvoicing_provider"
+        ).values_list("object_id", flat=True)
         event_pks = Event_SettingsStore.objects.filter(
             key="ptinvoicing_provider"
         ).values_list("object_id", flat=True)
-        for event in Event.objects.filter(pk__in=event_pks):
-            if "pretix_ptinvoicing" not in event.get_plugins():
+        holders = [
+            # Organizers first, and whether or not any event has the plugin on yet: a
+            # connection set up ahead of its events must still be there for them.
+            *Organizer.objects.filter(pk__in=organizer_pks),
+            *Event.objects.filter(
+                Q(pk__in=event_pks) | Q(organizer_id__in=organizer_pks)
+            ).select_related("organizer"),
+        ]
+        dead = {}  # connection holder -> its keepalive() just found it dead
+        mailed = set()
+        for holder in holders:
+            is_event = isinstance(holder, Event)
+            if is_event and "pretix_ptinvoicing" not in holder.get_plugins():
                 continue
-            provider = get_provider(event)
+            provider = get_provider(holder)
             if provider is None:
                 continue
-            try:
-                dead = provider.keepalive()
-            except Exception:
-                logger.exception("ptinvoicing: keepalive failed for %s", event)
-                continue
-            if dead:
-                send_connection_expired_email(event, provider)
+            connection = provider.connection_holder
+            if connection not in dead:
+                try:
+                    dead[connection] = provider.keepalive()
+                except Exception:
+                    logger.exception("ptinvoicing: keepalive failed for %s", holder)
+                    dead[connection] = False
+            # Every event left without a connection hears about it, at its own contact
+            # address — once per address, however many events share it.
+            recipient = is_event and holder.settings.get("contact_mail")
+            if dead[connection] and is_event and (connection, recipient) not in mailed:
+                mailed.add((connection, recipient))
+                send_connection_expired_email(holder, provider)
 
 
 @receiver(order_paid, dispatch_uid="ptinvoicing_order_paid")
@@ -199,16 +232,50 @@ def ptinvoicing_item_copy(sender, source, target, **kwargs):
 def ptinvoicing_html_head(sender, request, **kwargs):
     # With the custom field as the NIF, hides pretix's own VAT ID field (checkout.js).
     # Not on payment pages (PCI DSS 6.4.3, see the signal's docs).
-    if getattr(request, "pci_dss_payment_page", False) or not sender.settings.get(
+    settings = sender.settings
+    if getattr(request, "pci_dss_payment_page", False) or not settings.get(
         "ptinvoicing_nif_custom_field", as_type=bool
     ):
         return ""
+    # checkout.js is a static file: what it needs to know about the event's tax number
+    # rule (orderdata.nif_problem, which it mirrors) travels on its own <script> tag.
+    nif_required = settings.get(
+        "ptinvoicing_nif_required", as_type=bool
+    ) and not _cart_is_free(request)
     return format_html(
         '<link rel="stylesheet" href="{}">'
-        '<script type="application/javascript" src="{}" defer></script>',
+        '<script type="application/javascript" src="{}" defer'
+        ' data-nif-required="{}" data-address-required="{}" data-text-invalid="{}"'
+        ' data-text-required="{}"></script>',
         static("pretix_ptinvoicing/checkout.css"),
         static("pretix_ptinvoicing/checkout.js"),
+        "true" if nif_required else "",
+        "true" if settings.get("invoice_address_required", as_type=bool) else "",
+        _("This is not a valid Portuguese tax number (NIF)."),
+        # The marker pretix itself renders on a required field's label, in its own
+        # words (its JavaScript catalog has no translation for it).
+        pgettext("form", "required"),
     )
+
+
+def _cart_is_free(request):
+    # Only worth working out at checkout — html_head runs on every page of the shop.
+    match = getattr(request, "resolver_match", None)
+    if not match or not (match.url_name or "").startswith("event.checkout"):
+        return False
+    return get_cart_is_free(request)
+
+
+@receiver(validate_order, dispatch_uid="ptinvoicing_validate_order")
+def ptinvoicing_validate_order(sender, positions, invoice_address, **kwargs):
+    # pretix has no hook into the invoice address form, so the tax number rule is asked
+    # for in the browser (checkout.js) and held here, when the order is placed: the one
+    # place a buyer without the script still can't get past.
+    problem = nif_problem(
+        sender, invoice_address, free=not any(p.price for p in positions)
+    )
+    if problem:
+        raise OrderError(problem)
 
 
 def _nav_entry(request, url_name, label, icon=None):
@@ -247,6 +314,32 @@ def ptinvoicing_nav_event_settings(sender, request, **kwargs):
     ):
         return []
     return [_nav_entry(request, "settings", _("Invoicing (PT)"))]
+
+
+@receiver(nav_organizer, dispatch_uid="ptinvoicing_nav_organizer")
+def ptinvoicing_nav_organizer(sender, request, organizer, **kwargs):
+    # The organizer's own invoicing settings page (what its events inherit), under the
+    # organizer's "Settings" like pretix's own organizer-wide settings.
+    if not request.user.has_organizer_permission(
+        organizer, "can_change_organizer_settings", request=request
+    ):
+        return []
+    resolved = request.resolver_match
+    return [
+        {
+            "label": _("Invoicing (PT)"),
+            "url": reverse(
+                "plugins:pretix_ptinvoicing:organizer_settings",
+                kwargs={"organizer": organizer.slug},
+            ),
+            "parent": reverse(
+                "control:organizer.edit", kwargs={"organizer": organizer.slug}
+            ),
+            "active": resolved
+            and resolved.namespace == "plugins:pretix_ptinvoicing"
+            and resolved.url_name.startswith("organizer_"),
+        }
+    ]
 
 
 @receiver(control_order_info, dispatch_uid="ptinvoicing_order_info")

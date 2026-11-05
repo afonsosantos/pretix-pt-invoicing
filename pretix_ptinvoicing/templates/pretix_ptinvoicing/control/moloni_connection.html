@@ -3,31 +3,53 @@
     Connect is a button, not a nested form: it posts the surrounding settings form to its
     own formaction, which is how it keeps everything typed but not yet saved. Disconnect
     is a link to a confirmation page instead — it stops issuance.
+
+    On an event's page the connection may be the organizer's (connection_inherited):
+    connecting here then gives the event one of its own, and there is nothing of the
+    event's to disconnect.
 {% endcomment %}
 <div class="form-group">
     <label class="col-md-3 control-label">{% trans "Moloni connection" %}</label>
     <div class="col-md-9">
         {% if provider.connection_state == "connected" %}
             <p class="form-control-static text-success">
-                <span class="fa fa-check" aria-hidden="true"></span> {% trans "Connected" %}
+                <span class="fa fa-check" aria-hidden="true"></span>
+                {% if provider.connection_inherited %}
+                    {% trans "Connected through the organizer's settings" %}
+                {% else %}
+                    {% trans "Connected" %}
+                {% endif %}
             </p>
         {% elif provider.connection_state == "expired" %}
             <div class="alert alert-danger">
-                {% blocktrans trimmed %}
-                    The connection to Moloni has expired. Invoices can't be issued until you
-                    connect again.
-                {% endblocktrans %}
+                {% if provider.connection_inherited %}
+                    {% blocktrans trimmed with url=provider.organizer_settings_url %}
+                        The organizer's connection to Moloni has expired. Invoices can't be
+                        issued until it is connected again in the
+                        <a href="{{ url }}">organizer's invoicing settings</a>.
+                    {% endblocktrans %}
+                {% else %}
+                    {% blocktrans trimmed %}
+                        The connection to Moloni has expired. Invoices can't be issued until you
+                        connect again.
+                    {% endblocktrans %}
+                {% endif %}
             </div>
         {% else %}
             <p class="form-control-static">{% trans "Not connected" %}</p>
         {% endif %}
         <button type="submit" class="btn btn-default" formnovalidate
-                formaction="{% url "plugins:pretix_ptinvoicing:moloni_connect" organizer=request.organizer.slug event=request.event.slug %}">
-            {% if provider.connection_state %}{% trans "Reconnect to Moloni" %}{% else %}{% trans "Connect to Moloni" %}{% endif %}
+                formaction="{{ provider.connect_url }}">
+            {% if provider.connection_inherited %}
+                {% trans "Connect this event on its own" %}
+            {% elif provider.connection_state %}
+                {% trans "Reconnect to Moloni" %}
+            {% else %}
+                {% trans "Connect to Moloni" %}
+            {% endif %}
         </button>
-        {% if provider.connection_state %}
-            <a class="btn btn-danger"
-               href="{% url "plugins:pretix_ptinvoicing:moloni_disconnect" organizer=request.organizer.slug event=request.event.slug %}">
+        {% if provider.connection_state and not provider.connection_inherited %}
+            <a class="btn btn-danger" href="{{ provider.disconnect_url }}">
                 {% trans "Disconnect" %}
             </a>
         {% endif %}

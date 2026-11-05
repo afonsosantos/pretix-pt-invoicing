@@ -30,6 +30,17 @@ def logged_in_client(client, event):
 
 
 @pytest.fixture
+def organizer_client(logged_in_client, event):
+    # The same user, now also allowed to change the organizer's own settings — what the
+    # organizer-level invoicing page asks for.
+    with scopes_disabled():
+        Team.objects.filter(organizer=event.organizer).update(
+            all_organizer_permissions=True
+        )
+    return logged_in_client
+
+
+@pytest.fixture
 def organizer():
     with scopes_disabled():
         return Organizer.objects.create(name="Dummy", slug="dummy")

@@ -4,15 +4,20 @@ from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.text import format_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import ListView, View
-from pretix.base.models import Order
+from pretix.base.models import Event, Order
 from pretix.base.templatetags.money import money_filter
-from pretix.control.permissions import EventPermissionRequiredMixin
+from pretix.control.permissions import (
+    EventPermissionRequiredMixin,
+    OrganizerPermissionRequiredMixin,
+)
 from pretix.control.views.event import EventSettingsViewMixin
 from pretix.presale.views import EventViewMixin
 from pretix.presale.views.order import OrderDetailMixin
 
+from .apps import DOCS_URL
 from .forms import EmailSettingsForm, ProviderSelectForm
 from .models import IssuedInvoice
 from .orderdata import is_free
@@ -299,10 +304,52 @@ class OrderInvoiceDownloadView(EventViewMixin, OrderDetailMixin, View):
             return redirect(self.get_order_url())
 
 
-class SettingsLookupsView(EventPermissionRequiredMixin, PluginEnabledMixin, View):
+class EventHolderMixin(EventPermissionRequiredMixin, PluginEnabledMixin):
+    """A settings view for one event: `holder` is what the settings are stored on."""
+
+    permission = "can_change_event_settings"
+
+    @property
+    def holder(self):
+        return self.request.event
+
+
+class OrganizerHolderMixin(OrganizerPermissionRequiredMixin):
+    """
+    The same settings view for an organizer, whose values every one of its events
+    inherits until it sets its own. No "plugin enabled" check: plugins are enabled per
+    event, and these are only defaults — nothing is issued for an organizer.
+    """
+
+    permission = "can_change_organizer_settings"
+
+    @property
+    def holder(self):
+        return self.request.organizer
+
+
+def settings_url(holder, provider=None):
+    """
+    The invoicing settings page of an event or an organizer. `provider` keeps that
+    provider's card selected even if the saved provider is another one (the Moloni
+    connect flow returns with it: connecting doesn't switch issuance over by itself).
+    """
+    if isinstance(holder, Event):
+        url = reverse(
+            "plugins:pretix_ptinvoicing:settings",
+            kwargs={"organizer": holder.organizer.slug, "event": holder.slug},
+        )
+    else:
+        url = reverse(
+            "plugins:pretix_ptinvoicing:organizer_settings",
+            kwargs={"organizer": holder.slug},
+        )
+    return f"{url}?provider={provider}" if provider else url
+
+
+class LookupsMixin:
     # Powers the live dropdowns on the settings page: the browser posts whatever the admin
     # has currently typed (not necessarily saved), so options show up before hitting Save.
-    permission = "can_change_event_settings"
 
     def post(self, request, *args, **kwargs):
         cls = PROVIDERS.get(request.POST.get("provider", ""))
@@ -311,12 +358,20 @@ class SettingsLookupsView(EventPermissionRequiredMixin, PluginEnabledMixin, View
                 {"error": str(_("Unknown invoicing provider."))}, status=400
             )
         try:
-            fields = cls(request.event).lookups(request.POST)
+            fields = cls(self.holder).lookups(request.POST)
         except ProviderError as e:
             return JsonResponse({"error": e.as_text()}, status=400)
         except ProviderUnreachable as e:
             return JsonResponse({"error": str(e)}, status=400)
         return JsonResponse({"fields": fields})
+
+
+class SettingsLookupsView(EventHolderMixin, LookupsMixin, View):
+    pass
+
+
+class OrganizerSettingsLookupsView(OrganizerHolderMixin, LookupsMixin, View):
+    pass
 
 
 def _no_autofill(form):
@@ -341,65 +396,84 @@ def _no_autofill(form):
         )
 
 
-def provider_forms(request, bound=None):
-    """Every provider's settings form, prefixed by its identifier; only `bound` is bound."""
+def provider_forms(holder, data=None, bound=None):
+    """
+    Every provider's settings form for an event or organizer, prefixed by its
+    identifier; only `bound` is bound, to `data`.
+    """
     forms_by_provider = {}
     for identifier, cls in PROVIDERS.items():
         form = cls.settings_form_class(
-            obj=request.event,
+            obj=holder,
             prefix=identifier,
-            data=request.POST if identifier == bound else None,
+            data=data if identifier == bound else None,
         )
-        for name in cls(request.event).hidden_settings_fields():
+        for name in cls(holder).hidden_settings_fields():
             form.fields.pop(name, None)
         forms_by_provider[identifier] = form
     return forms_by_provider
 
 
-def save_valid_fields(request, provider):
+def save_valid_fields(holder, data, provider):
     """
     Store whatever is valid on the posted settings page, ignoring what isn't: for
     leaving the page mid-setup (Moloni's "Connect" round-trip) without losing what was
-    typed, when required fields can't all be filled yet. Never switches the event's
+    typed, when required fields can't all be filled yet. Never switches the holder's
     provider — connecting one is not choosing it.
     """
     for form in (
-        ProviderSelectForm(obj=request.event, data=request.POST),
-        EmailSettingsForm(obj=request.event, data=request.POST),
-        provider_forms(request, bound=provider)[provider],
+        ProviderSelectForm(obj=holder, data=data),
+        EmailSettingsForm(obj=holder, data=data),
+        provider_forms(holder, data=data, bound=provider)[provider],
     ):
         form.is_valid()
         for name, value in form.cleaned_data.items():
             if name == "ptinvoicing_provider":
                 continue
             if value is None or value == "":
-                request.event.settings.delete(name)
-            else:
-                request.event.settings.set(name, value)
+                holder.settings.delete(name)
+            # Only what differs from the value in effect, like the form's own save():
+            # an event must not end up with a copy of everything it merely inherits.
+            elif holder.settings.get(name, as_type=type(value)) != value:
+                holder.settings.set(name, value)
 
 
-class SettingsView(
-    EventSettingsViewMixin, EventPermissionRequiredMixin, PluginEnabledMixin, View
-):
-    permission = "can_change_event_settings"
-    template_name = "pretix_ptinvoicing/control/settings.html"
+def own_settings_keys(event):
+    """
+    The plugin's settings this event stores itself, rather than taking them from its
+    organizer: everything on the settings page, plus what providers keep beside it.
+    """
+    keys = [*ProviderSelectForm(obj=event).fields, *EmailSettingsForm(obj=event).fields]
+    for cls in PROVIDERS.values():
+        keys += [*cls.settings_form_class(obj=event).fields, *cls.stored_keys]
+    own = event.settings._cache()
+    return [key for key in keys if key in own]
+
+
+class SettingsMixin:
+    """
+    The invoicing settings page, for whatever `holder` the view is about — an event, or
+    an organizer (whose values its events inherit).
+    """
 
     def get(self, request, *args, **kwargs):
         return self.render(
             request,
-            ProviderSelectForm(obj=request.event),
-            EmailSettingsForm(obj=request.event),
-            provider_forms(request),
+            ProviderSelectForm(obj=self.holder),
+            EmailSettingsForm(obj=self.holder),
+            provider_forms(self.holder),
         )
 
     def post(self, request, *args, **kwargs):
-        select_form = ProviderSelectForm(obj=request.event, data=request.POST)
-        email_form = EmailSettingsForm(obj=request.event, data=request.POST)
+        select_form = ProviderSelectForm(obj=self.holder, data=request.POST)
+        email_form = EmailSettingsForm(obj=self.holder, data=request.POST)
         selected = request.POST.get("ptinvoicing_provider", "")
         # Only the selected provider's form is bound: the others keep their stored
         # settings untouched and must not raise validation errors for fields the admin
         # isn't editing.
-        forms_by_provider = provider_forms(request, bound=selected)
+        forms_by_provider = provider_forms(
+            self.holder, data=request.POST, bound=selected
+        )
         active = forms_by_provider.get(selected)
 
         if (
@@ -412,15 +486,7 @@ class SettingsView(
             if active:
                 active.save()
             messages.success(request, _("Invoicing settings saved."))
-            return redirect(
-                reverse(
-                    "plugins:pretix_ptinvoicing:settings",
-                    kwargs={
-                        "event": request.event.slug,
-                        "organizer": request.organizer.slug,
-                    },
-                )
-            )
+            return redirect(settings_url(self.holder))
         return self.render(request, select_form, email_form, forms_by_provider)
 
     def render(self, request, select_form, email_form, forms_by_provider):
@@ -428,12 +494,13 @@ class SettingsView(
             _no_autofill(form)
         # Which card starts selected: what was just posted, else ?provider= (the Moloni
         # connect flow returns with it, so a provider being set up stays shown even
-        # though it isn't saved as the event's provider yet), else what's saved.
+        # though it isn't saved as the holder's provider yet), else what's saved.
         selected = request.POST.get("ptinvoicing_provider")
         if selected is None:
             selected = request.GET.get("provider")
         if selected not in PROVIDERS and selected != "":
-            selected = request.event.settings.get("ptinvoicing_provider") or ""
+            selected = self.holder.settings.get("ptinvoicing_provider") or ""
+        is_event = isinstance(self.holder, Event)
         return render(
             request,
             self.template_name,
@@ -441,6 +508,12 @@ class SettingsView(
                 "select_form": select_form,
                 "email_form": email_form,
                 "selected_provider": selected,
+                "docs_url": DOCS_URL,
+                # An event's page says where its unset values come from, and offers to
+                # go back to them once it has some of its own.
+                "organizer_settings_url": is_event
+                and settings_url(self.holder.organizer),
+                "has_own_settings": is_event and bool(own_settings_keys(self.holder)),
                 "provider_cards": [
                     {"identifier": "", "label": _("No invoicing"), "logo": None}
                 ]
@@ -457,9 +530,61 @@ class SettingsView(
                         "identifier": identifier,
                         "label": PROVIDERS[identifier].verbose_name,
                         "form": form,
-                        "provider": PROVIDERS[identifier](request.event),
+                        "provider": PROVIDERS[identifier](self.holder),
                     }
                     for identifier, form in forms_by_provider.items()
                 ],
             },
         )
+
+
+class SettingsView(EventSettingsViewMixin, EventHolderMixin, SettingsMixin, View):
+    template_name = "pretix_ptinvoicing/control/settings.html"
+
+
+class OrganizerSettingsView(OrganizerHolderMixin, SettingsMixin, View):
+    template_name = "pretix_ptinvoicing/control/organizer_settings.html"
+
+
+class ResetSettingsView(EventHolderMixin, View):
+    """
+    "Use the organizer's settings": drops everything the event stores itself, so it
+    inherits again. The only way back once a value has been saved on the event — a
+    saved value overrides the organizer's for good, even when it's later set equal.
+    GET asks first: it takes the event's own provider connection with it.
+    """
+
+    def get(self, request, *args, **kwargs):
+        text = _(
+            "This removes the invoicing settings saved on this event, its own provider "
+            "connection included, so that it follows the organizer's invoicing "
+            "settings. Documents already issued are not affected."
+        )
+        if get_provider(request.organizer) is None:
+            text = format_lazy(
+                "{} {}",
+                text,
+                _(
+                    "The organizer has no invoicing provider selected: nothing will be "
+                    "issued for this event until one is."
+                ),
+            )
+        return render(
+            request,
+            "pretix_ptinvoicing/control/confirm.html",
+            {
+                "title": _("Use the organizer's invoicing settings"),
+                "text": text,
+                "button": _("Use the organizer's settings"),
+                "danger": True,
+                "next": settings_url(request.event),
+            },
+        )
+
+    def post(self, request, *args, **kwargs):
+        for key in own_settings_keys(request.event):
+            request.event.settings.delete(key)
+        messages.success(
+            request, _("This event now follows the organizer's invoicing settings.")
+        )
+        return redirect(settings_url(request.event))

@@ -247,3 +247,51 @@ def test_checkout_assets_load_only_with_the_custom_nif_field(event, rf):
     assert "checkout.js" in head and "checkout.css" in head
     request.pci_dss_payment_page = True
     assert ptinvoicing_html_head(event, request=request) == ""
+
+
+@pytest.mark.django_db
+def test_checkout_script_is_told_the_tax_number_rule(event, rf):
+    from pretix_ptinvoicing.signals import ptinvoicing_html_head
+
+    request = rf.get("/")
+    event.settings.ptinvoicing_nif_custom_field = True
+    assert 'data-nif-required=""' in ptinvoicing_html_head(event, request=request)
+
+    event.settings.ptinvoicing_nif_required = True
+    event.settings.invoice_address_required = True
+    head = ptinvoicing_html_head(event, request=request)
+    assert 'data-nif-required="true"' in head
+    assert 'data-address-required="true"' in head
+
+
+@pytest.mark.django_db
+def test_an_order_without_the_required_tax_number_is_refused(event, item):
+    from pretix.base.models import CartPosition, InvoiceAddress
+    from pretix.base.services.orders import OrderError
+    from pretix.base.signals import validate_order
+
+    event.settings.ptinvoicing_nif_custom_field = True
+    event.settings.ptinvoicing_nif_required = True
+    event.settings.invoice_address_asked = True
+    event.settings.invoice_address_custom_field = "NIF"
+    business = InvoiceAddress(is_business=True, country="PT")
+
+    def place(price, address):
+        # send(), not send_robust(): this is how pretix itself sends it, so the
+        # receiver's OrderError reaches the buyer.
+        validate_order.send(
+            event,
+            payments=[],
+            positions=[CartPosition(event=event, item=item, price=Decimal(price))],
+            email="buyer@example.org",
+            locale="en",
+            invoice_address=address,
+            meta_info={},
+            customer=None,
+        )
+
+    with pytest.raises(OrderError):
+        place("23.00", business)
+    place("0.00", business)  # a free order gets no invoice: nothing to require
+    business.custom_field = "237892294"
+    place("23.00", business)
