@@ -1,0 +1,37 @@
+# Release Drafter (https://github.com/release-drafter/release-drafter) keeps one draft release
+# up to date as pull requests merge into main. Sections and the next version come from the
+# pull requests' labels; the draft is a starting point, edited by hand before publishing.
+name-template: "v$RESOLVED_VERSION"
+tag-template: "v$RESOLVED_VERSION"
+
+# Same shape as the notes written by hand so far: "New:" / "Bug fixes:" over plain lists.
+category-template: "$TITLE:"
+change-template: "- $TITLE (#$NUMBER)"
+change-title-escapes: '\<*_&'
+no-changes-template: "- No changes"
+template: |
+  $CHANGES
+
+categories:
+  - title: "New"
+    semver-increment: minor
+    when:
+      label: "enhancement"
+  - title: "Bug fixes"
+    when:
+      label: "bug"
+  - title: "Documentation"
+    when:
+      label: "documentation"
+  - title: "Dependencies"
+    when:
+      label: "dependencies"
+  # No `when`: whatever matched none of the above.
+  - title: "Other"
+  - type: pre-exclude
+    when:
+      label: "skip-changelog"
+  # Only used while pyproject.toml still holds the last released version: once it is
+  # bumped, the workflow passes that version in and it wins.
+  - type: version-resolver
+    semver-increment: patch

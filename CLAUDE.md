@@ -1196,3 +1196,22 @@ has to be registered against the new name.
 
 Bump the version in both `pyproject.toml` and `pretix_ptinvoicing/__init__.py` via `make bump-version
 <version>` rather than by hand, then `uv lock` to sync `uv.lock`'s own entry.
+
+**Release notes are drafted by [Release Drafter](https://github.com/release-drafter/release-drafter)**
+(`.github/workflows/release-drafter.yml`, configured in `.github/release-drafter.yml`): every push
+to `main` rewrites one *draft* GitHub release listing the pull requests merged since the last
+published one. A draft triggers nothing — PyPI publishing still starts only when the release is
+published by hand, and the draft's body is a starting point to edit first (each push to `main`
+overwrites it, so edit it last).
+- **Label the pull request**; that is where the sections come from: `enhancement` → "New",
+  `bug` → "Bug fixes", `documentation`, `dependencies`, anything else → "Other".
+  `skip-changelog` leaves a pull request out (a bare version bump).
+- **The draft's version is `pyproject.toml`'s** whenever that version has no tag yet: the
+  package's version comes from `pyproject.toml`, not from the tag, so a draft named from labels
+  alone could publish 0.11.0 to PyPI under a `v0.10.1` tag. Only while `pyproject.toml` still
+  holds the last released version does Release Drafter work the next one out from the labels
+  (`enhancement` → minor, otherwise patch) — a placeholder until the bump is merged.
+- To try a config change without writing anything:
+  `GH_TOKEN="$(gh auth token)" npx release-drafter afonsosantos/pretix-pt-invoicing --config
+  file:.github/release-drafter.yml --to main --from v0.7.1 --dry-run` (the package asks for
+  Node 24, and ran on 22 with a warning).
